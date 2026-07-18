@@ -1,0 +1,11 @@
+pandas>=2.0
+openpyxl>=3.1
+SQLAlchemy>=2.0
+streamlit>=1.30
+pytest>=7.0
+
+# Banco de produção (Supabase/Postgres). O SQLite continua embutido no Python e
+# não pede dependência — é o que mantém a suíte de testes rodando sem infra.
+psycopg2-binary>=2.9
+# Lê o .env com a DATABASE_URL. Opcional: sem ele, basta a variável no ambiente.
+python-dotenv>=1.0
