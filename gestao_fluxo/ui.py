@@ -12,6 +12,7 @@ import math
 
 import pandas as pd
 import streamlit as st
+import streamlit.components.v1 as components
 
 from gestao_fluxo import excel, log
 from gestao_fluxo.exceptions import GestaoFluxoError
@@ -46,24 +47,128 @@ _CSS = """
     --linha:#212B36; --tinta:#E6EDF3; --muted:#8B98A9;
 }
 .stApp { background:var(--bg); }
-.block-container { padding-top: 1.6rem; max-width: 1470px; }
 
-/* Cabeçalho do app — a marca fica num quadrado de acento, como num produto real. */
-.app-header {
-    display:flex; align-items:center; gap:16px;
-    background:var(--surface); border:1px solid var(--linha); border-radius:16px;
-    padding:18px 22px;
+/* ================================================================== *
+ * NAVBAR — barra fixa no topo (substitui a antiga sidebar)
+ *
+ * A barra nativa do Streamlit fica transparente e a toolbar (Deploy /
+ * menu) some: sem isso dois "topos" disputam a mesma faixa e o botão de
+ * ação da direita cai embaixo do menu do próprio Streamlit.
+ * ================================================================== */
+/* `pointer-events:none` no header não é cosmético: ele é uma faixa fixa de
+   60px com z-index 999990, então ficava por cima da navbar e engolia TODOS os
+   cliques dela (abas, botão de ação e hamburguer). Deixá-lo transparente
+   resolvia só a aparência — a barra continuava inerte. Como a toolbar está
+   escondida, não sobra nada de interativo nele para perder. */
+[data-testid="stHeader"] { background:transparent; pointer-events:none; }
+[data-testid="stToolbar"] { display:none; }
+
+/* padding-top abre espaço para a barra fixa (~64px) sem que o primeiro
+   bloco da página nasça escondido embaixo dela. */
+.block-container { padding-top: 6rem; max-width: 1470px; }
+
+/* `position:fixed` e não `sticky`: o Streamlit envolve cada `st.container`
+   num wrapper que abraça só a altura do próprio conteúdo, e isso deixa o
+   sticky sem folga para "grudar" — na prática a barra sumia ao rolar. */
+.st-key-navbar {
+    /* z-index acima do header do Streamlit (999990) — ver a nota lá em cima. */
+    position:fixed; top:0; left:0; right:0; z-index:999991;
+    background:rgba(18,24,33,.82);
+    -webkit-backdrop-filter:blur(14px) saturate(150%);
+    backdrop-filter:blur(14px) saturate(150%);
+    border-bottom:1px solid var(--linha);
+    transition:background-color .25s ease, box-shadow .25s ease;
 }
+/* Alinha o conteúdo da barra com a coluna de conteúdo da página: mesmo
+   teto de largura e mesma respiração lateral do `.block-container`. */
+.st-key-navbar > [data-testid="stLayoutWrapper"] {
+    max-width:1470px; margin:0 auto;
+    padding:13px clamp(20px, 5.5vw, 80px);
+    transition:padding .25s ease;
+}
+/* Estado rolado (classe posta pelo script da navbar): barra mais baixa,
+   fundo mais opaco e sombra — vira uma camada sobre o conteúdo. */
+.st-key-navbar.nav-scrolled {
+    background:rgba(13,18,25,.94);
+    box-shadow:0 8px 26px -12px rgba(0,0,0,.85);
+}
+.st-key-navbar.nav-scrolled > [data-testid="stLayoutWrapper"] {
+    padding-top:7px; padding-bottom:7px;
+}
+/* As colunas da barra nunca quebram em linhas: é uma faixa só. */
+.st-key-navbar [data-testid="stHorizontalBlock"] {
+    align-items:center; flex-wrap:nowrap; gap:16px;
+}
+
+/* ---- Marca (logo + título) ---- */
+.navbar-brand { display:flex; align-items:center; gap:12px; }
 .app-logo {
-    width:46px; height:46px; border-radius:13px; display:grid; place-items:center;
+    width:34px; height:34px; border-radius:10px; display:grid; place-items:center;
     background:linear-gradient(135deg,#2DD4BF,#14B8A6); color:#08131A; flex:none;
+    box-shadow:0 4px 14px -6px rgba(45,212,191,.7);
 }
-.app-logo svg { width:24px; height:24px; display:block; }
+.app-logo svg { width:19px; height:19px; display:block; }
 .app-title {
-    font-size:1.2rem; font-weight:700; color:var(--tinta);
-    line-height:1.2; letter-spacing:-.01em;
+    font-size:1.02rem; font-weight:700; color:var(--tinta);
+    line-height:1.2; letter-spacing:-.01em; white-space:nowrap;
 }
-.app-sub { font-size:.875rem; color:var(--muted); margin-top:3px; }
+
+/* ---- Botão de ação "Dados" (gatilho do popover) ---- */
+/* A coluna da ação é mais larga que o botão (ela reserva a fatia da faixa) e
+   o wrapper do popover encolhe até o conteúdo — sem `align-items:flex-end` o
+   botão fica boiando no meio da coluna em vez de ancorar na direita. */
+.st-key-navbar [data-testid="stColumn"]:nth-child(3) > [data-testid="stVerticalBlock"] {
+    align-items:flex-end;
+}
+/* Reusa o formato de ação primária que já existe no app (o mesmo de
+   "Salvar metas" e dos downloads): gradiente verde e tinta escura. */
+.st-key-navbar [data-testid="stPopoverButton"] {
+    background:linear-gradient(135deg,#2DD4BF,#14B8A6);
+    border:none; border-radius:10px;
+    font-weight:700; font-size:.85rem; letter-spacing:.01em;
+    padding:9px 18px; white-space:nowrap;
+    transition:filter .15s ease, transform .15s ease;
+}
+.st-key-navbar [data-testid="stPopoverButton"]:hover {
+    filter:brightness(1.08); transform:translateY(-1px);
+}
+/* O Streamlit repinta o texto no hover/active; travamos a tinta escura. */
+.st-key-navbar [data-testid="stPopoverButton"],
+.st-key-navbar [data-testid="stPopoverButton"] p,
+.st-key-navbar [data-testid="stPopoverButton"]:hover,
+.st-key-navbar [data-testid="stPopoverButton"]:active { color:#08131A; }
+.st-key-navbar [data-testid="stPopoverButton"] svg { fill:#08131A; }
+.st-key-navbar [data-testid="stPopoverButton"]:focus-visible {
+    outline:none; box-shadow:0 0 0 3px rgba(45,212,191,.32);
+}
+/* Painel flutuante do popover. */
+div[data-testid="stPopoverBody"] {
+    background:var(--surface); border:1px solid var(--linha); border-radius:14px;
+}
+
+/* ---- Botão hamburguer (só no mobile; criado pelo script da navbar) ---- */
+.nav-burger {
+    display:none; flex:none; width:38px; height:38px; padding:0;
+    background:var(--surface-2); border:1px solid var(--linha); border-radius:10px;
+    cursor:pointer; position:relative;
+    transition:border-color .15s ease;
+}
+.nav-burger:hover { border-color:var(--verde); }
+.nav-burger span {
+    position:absolute; left:50%; width:16px; height:2px; border-radius:2px;
+    background:var(--tinta); transform:translateX(-50%);
+    transition:transform .25s ease, opacity .2s ease;
+}
+.nav-burger span:nth-child(1) { top:12px; }
+.nav-burger span:nth-child(2) { top:18px; }
+.nav-burger span:nth-child(3) { top:24px; }
+/* Aberto: as duas pontas viram X e a do meio some. */
+.nav-open .nav-burger span:nth-child(1) { transform:translate(-50%,6px) rotate(45deg); }
+.nav-open .nav-burger span:nth-child(2) { opacity:0; }
+.nav-open .nav-burger span:nth-child(3) { transform:translate(-50%,-6px) rotate(-45deg); }
+
+/* O iframe do script da navbar não ocupa espaço nem intercepta cliques. */
+.st-key-navbar-js { height:0; overflow:hidden; pointer-events:none; }
 
 .sec-title {
     font-weight:700; color:var(--tinta); font-size:1rem; letter-spacing:-.01em;
@@ -189,18 +294,133 @@ table.gf tbody td.of { color:var(--verde); font-weight:600; text-align:left; }
 .badge-sub { font-size:.8rem; color:var(--muted); }
 
 /* ---- Widgets nativos do Streamlit ---- */
-[data-testid="stTabs"] [role="tablist"] {
-    gap:4px; border-bottom:1px solid var(--linha);
+/* Navegação principal — pills dentro da própria navbar, no lugar das antigas
+   abas (`st.tabs` não dava para embutir na mesma linha da marca e do botão
+   "Dados": o conteúdo de cada aba nasce preso à largura de onde o widget foi
+   criado). Com `st.segmented_control` só o seletor mora na navbar; o conteúdo
+   da seção ativa renderiza solto, em largura cheia, logo abaixo.
+   ATENÇÃO ao seletor: o `st.segmented_control` NÃO gera um
+   `[data-testid="stSegmentedControl"]` — ele sai como `stButtonGroup` com
+   `button[data-variant="segmented_control"]`, e o estado ativo vem em
+   `aria-checked`, não em `:checked` nem em `<label>`. Mirar no testid errado
+   é silencioso: o CSS simplesmente não casa e as abas ficam com o visual
+   cru do Streamlit. */
+.st-key-navbar [data-testid="stButtonGroup"] {
+    display:flex; justify-content:center;
 }
-[data-testid="stTab"] {
-    color:var(--muted); font-weight:600; font-size:.9rem; padding:10px 16px;
+.st-key-navbar [data-testid="stButtonGroup"] > div[role="radiogroup"] {
+    display:flex; gap:4px; background:rgba(24,32,41,.55);
+    border:1px solid var(--linha); border-radius:12px; padding:4px;
 }
-[data-testid="stTab"][aria-selected="true"] { color:var(--tinta); }
-[data-testid="stTabs"] [data-baseweb="tab-highlight"] { background:var(--verde); }
+.st-key-navbar [data-testid="stButtonGroup"] button[data-variant="segmented_control"] {
+    background:transparent; border:none; border-radius:9px;
+    color:var(--muted); font-weight:600; font-size:.85rem;
+    padding:7px 16px; white-space:nowrap;
+    transition:color .18s ease, background-color .18s ease;
+}
+.st-key-navbar [data-testid="stButtonGroup"] button[data-variant="segmented_control"] p {
+    color:inherit; font-weight:inherit; font-size:inherit;
+}
+.st-key-navbar [data-testid="stButtonGroup"]
+    button[data-variant="segmented_control"]:hover {
+    background:var(--surface-2); color:var(--tinta);
+}
+/* Seção ativa: superfície elevada + tinta clara e um fio verde embaixo — o
+   acento marca o item sem competir com o botão de ação (o único gradiente
+   da barra). */
+.st-key-navbar [data-testid="stButtonGroup"]
+    button[data-variant="segmented_control"][aria-checked="true"] {
+    background:var(--surface-2); color:var(--tinta);
+    box-shadow:inset 0 -2px 0 0 var(--verde);
+}
+.st-key-navbar [data-testid="stButtonGroup"]
+    button[data-variant="segmented_control"]:focus-visible {
+    outline:none; box-shadow:0 0 0 2px rgba(45,212,191,.45);
+}
 
-section[data-testid="stSidebar"] {
-    background:var(--surface); border-right:1px solid var(--linha);
+/* ================= Responsivo ================= */
+/* Até 900px o menu central sai da faixa e vira um painel que desce sob a
+   barra, aberto pelo hamburguer. As colunas do Streamlit são forçadas a
+   continuar em linha: sem isso elas empilham e a barra vira um bloco alto. */
+@media (max-width: 900px) {
+    .nav-burger { display:block; }
+    .st-key-navbar > [data-testid="stLayoutWrapper"] { padding:10px 18px; }
+    .st-key-navbar [data-testid="stHorizontalBlock"] { gap:10px; }
+
+    /* Abaixo do seu breakpoint o Streamlit põe `min-width:calc(100% - 24px)`
+       em cada coluna — é assim que ele empilha. Como aqui a faixa é forçada a
+       continuar em linha, esse mínimo faz as colunas somarem mais que a tela e
+       o hamburguer é empurrado para fora dela. Zerar o mínimo devolve o
+       controle da largura ao flex. */
+    .st-key-navbar [data-testid="stColumn"] { min-width:0 !important; }
+    /* Marca ocupa a folga; a ação fica só com o tamanho do próprio botão.
+       `min-width:max-content` na coluna da ação é o que impede o botão de ser
+       espremido pela coluna da marca até o rótulo truncar. */
+    .st-key-navbar [data-testid="stColumn"]:nth-child(1) { flex:1 1 auto !important; }
+    .st-key-navbar [data-testid="stColumn"]:nth-child(3) {
+        flex:0 0 auto !important; min-width:max-content !important;
+    }
+
+    /* Coluna do meio (menu) — painel suspenso, escondido por padrão. */
+    /* `width:100%` explícito: só `left:0; right:0` não basta porque a coluna
+       herda uma largura calculada do flex e ela vence o esticamento. */
+    .st-key-navbar [data-testid="stColumn"]:nth-child(2) {
+        position:absolute; top:100%; left:0; right:0; width:100% !important;
+        background:var(--surface); border-bottom:1px solid var(--linha);
+        box-shadow:0 14px 30px -18px rgba(0,0,0,.9);
+        padding:12px 18px;
+        opacity:0; visibility:hidden; transform:translateY(-8px);
+        transition:opacity .2s ease, transform .2s ease, visibility .2s;
+    }
+    /* Os contêineres intermediários do Streamlit também encolhem ao conteúdo —
+       o `stElementContainer` em especial recebe uma largura calculada e, sem
+       este reset, o menu fica com a largura do rótulo mais longo em vez da
+       largura do painel. */
+    .st-key-navbar [data-testid="stColumn"]:nth-child(2) [data-testid="stVerticalBlock"],
+    .st-key-navbar [data-testid="stColumn"]:nth-child(2) [data-testid="stLayoutWrapper"],
+    .st-key-navbar [data-testid="stColumn"]:nth-child(2) [data-testid="stElementContainer"],
+    .st-key-navbar [data-testid="stColumn"]:nth-child(2) [data-testid="stButtonGroup"],
+    .st-key-navbar [data-testid="stColumn"]:nth-child(2) div[role="radiogroup"] {
+        /* `max-width` também precisa cair: o Streamlit põe `fit-content` no
+           radiogroup, e isso sozinho anula o `width:100%`. */
+        width:100% !important; max-width:none !important;
+    }
+    .st-key-navbar.nav-open [data-testid="stColumn"]:nth-child(2) {
+        opacity:1; visibility:visible; transform:translateY(0);
+    }
+    /* No painel o menu ocupa a largura toda, um item por linha. */
+    .st-key-navbar [data-testid="stButtonGroup"] > div[role="radiogroup"] {
+        flex-direction:column; width:100%; background:transparent;
+        border:none; padding:0; gap:2px;
+    }
+    .st-key-navbar [data-testid="stButtonGroup"]
+        button[data-variant="segmented_control"] {
+        width:100%; text-align:left; justify-content:flex-start; padding:11px 14px;
+    }
+    /* O rótulo mora em dois contêineres flex (div > span) que centralizam por
+       conta própria: só `text-align:left` não move nada, porque o parágrafo é
+       mais estreito que o botão e quem o posiciona é o `justify-content`. Sem
+       isto o texto fica no meio, brigando com o fio verde da esquerda que
+       marca o item ativo. */
+    .st-key-navbar [data-testid="stButtonGroup"]
+        button[data-variant="segmented_control"] > div,
+    .st-key-navbar [data-testid="stButtonGroup"]
+        button[data-variant="segmented_control"] > div > span {
+        width:100%; justify-content:flex-start !important;
+    }
+    .st-key-navbar [data-testid="stButtonGroup"]
+        button[data-variant="segmented_control"] p { text-align:left; }
+    .st-key-navbar [data-testid="stButtonGroup"]
+        button[data-variant="segmented_control"][aria-checked="true"] {
+        box-shadow:inset 2px 0 0 0 var(--verde);
+    }
 }
+/* Telas bem estreitas: o título da marca sai e fica só o logo. */
+@media (max-width: 460px) {
+    .app-title { display:none; }
+    .st-key-navbar [data-testid="stPopoverButton"] { padding:9px 13px; }
+}
+
 [data-testid="stDataFrame"], [data-testid="stExpander"] {
     border-radius:12px; border-color:var(--linha);
 }
@@ -302,17 +522,99 @@ _LOGO_SVG = (
 )
 
 
-def cabecalho(titulo: str, subtitulo: str) -> None:
+def cabecalho(titulo: str) -> None:
+    """Marca do app (logo + título): a ponta esquerda da navbar.
+
+    Só o título — o subtítulo saiu junto com a barra antiga: numa faixa de
+    ~64px ele quebrava em duas linhas e repetia, em letra miúda, exatamente
+    os nomes das seções que o menu ao lado já mostra.
+    """
     st.markdown(
-        f"""<div class="app-header">
+        f"""<div class="navbar-brand">
             <div class="app-logo">{_LOGO_SVG}</div>
-            <div>
-                <div class="app-title">{html.escape(titulo)}</div>
-                <div class="app-sub">{html.escape(subtitulo)}</div>
-            </div>
+            <div class="app-title">{html.escape(titulo)}</div>
         </div>""",
         unsafe_allow_html=True,
     )
+
+
+# Comportamento da navbar. Vai por `components.html` (um iframe) porque
+# `st.markdown` não executa <script> — de dentro do iframe o script alcança a
+# página pelo `window.parent`. Duas responsabilidades só:
+#   1. classe `nav-scrolled` quando a página sai do topo (encolhe + sombra);
+#   2. hamburguer no mobile, que liga/desliga a classe `nav-open`.
+# A navegação em si continua sendo o widget do Streamlit — o script nunca
+# decide qual seção está ativa, senão o estado do Python e o da tela divergem.
+_NAVBAR_JS = """
+<script>
+(function () {
+  const doc = window.parent.document;
+
+  function montar() {
+    const nav = doc.querySelector('.st-key-navbar');
+    if (!nav) return false;
+
+    // --- 1. Transição ao rolar -------------------------------------------
+    if (!nav.dataset.scrollLigado) {
+      // Conforme a versão, o Streamlit rola a janela ou um contêiner interno:
+      // observamos os dois e ficamos com o maior deslocamento.
+      const alvo = doc.querySelector('[data-testid="stMain"]');
+      const aoRolar = () => {
+        const y = Math.max(
+          window.parent.scrollY || 0,
+          doc.documentElement.scrollTop || 0,
+          alvo ? alvo.scrollTop : 0
+        );
+        nav.classList.toggle('nav-scrolled', y > 8);
+      };
+      window.parent.addEventListener('scroll', aoRolar, { passive: true });
+      if (alvo) alvo.addEventListener('scroll', aoRolar, { passive: true });
+      nav.dataset.scrollLigado = '1';
+      aoRolar();
+    }
+
+    // --- 2. Hamburguer ----------------------------------------------------
+    if (!nav.querySelector('.nav-burger')) {
+      const b = doc.createElement('button');
+      b.className = 'nav-burger';
+      b.type = 'button';
+      b.setAttribute('aria-label', 'Abrir menu');
+      b.setAttribute('aria-expanded', 'false');
+      b.innerHTML = '<span></span><span></span><span></span>';
+      b.addEventListener('click', () => {
+        const aberto = nav.classList.toggle('nav-open');
+        b.setAttribute('aria-expanded', String(aberto));
+        b.setAttribute('aria-label', aberto ? 'Fechar menu' : 'Abrir menu');
+      });
+      // Entra na faixa, entre a marca e o botão de ação.
+      const faixa = nav.querySelector('[data-testid="stHorizontalBlock"]');
+      (faixa || nav).appendChild(b);
+    }
+
+    // Escolher uma seção fecha o painel do mobile.
+    nav.querySelectorAll('[data-testid="stButtonGroup"] button').forEach((btn) => {
+      if (btn.dataset.fechaMenu) return;
+      btn.addEventListener('click', () => nav.classList.remove('nav-open'));
+      btn.dataset.fechaMenu = '1';
+    });
+    return true;
+  }
+
+  // O Streamlit troca nós do DOM a cada rerun e leva junto o que penduramos
+  // nele, então o observador fica de pé remontando o que sumir. `montar` é
+  // idempotente (cada parte checa antes de agir), então repetir não custa.
+  montar();
+  new MutationObserver(() => montar())
+    .observe(doc.body, { childList: true, subtree: true });
+})();
+</script>
+"""
+
+
+def navbar_comportamento() -> None:
+    """Liga o sticky/scroll e o hamburguer da navbar (ver `_NAVBAR_JS`)."""
+    with st.container(key="navbar-js"):
+        components.html(_NAVBAR_JS, height=0)
 
 
 def titulo_secao(texto: str, *, inline: bool = False) -> None:

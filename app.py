@@ -119,7 +119,7 @@ def _formulario_upload() -> None:
     novas e quantas já existem, e só o segundo clique escreve no banco — é o que
     torna a carga incremental auditável em vez de mágica.
     """
-    with st.sidebar.expander("Subir planilhas novas", expanded=False):
+    with st.expander("Subir planilhas novas", expanded=False):
         enviados = {}
         for fonte, spec in config.FONTES.items():
             arquivo = st.file_uploader(
@@ -186,22 +186,27 @@ def _painel_previa() -> None:
         st.rerun()
 
 
-def _sidebar() -> None:
-    st.sidebar.header("Dados")
+def _menu_dados() -> None:
+    """Conteúdo do popover "Dados" da navbar: upload, recarga e histórico.
+
+    Substitui a antiga barra lateral — mesmas ações, agora dentro de
+    `st.popover` em vez de `st.sidebar`, por isso os widgets usam `st.*`
+    direto (o próprio popover já é o contêiner).
+    """
     _formulario_upload()
 
-    if st.sidebar.button("Recarregar da pasta do projeto", use_container_width=True):
+    if st.button("Recarregar da pasta do projeto", use_container_width=True):
         try:
             _rodar_etl()
             st.rerun()
         except GestaoFluxoError as exc:
-            st.sidebar.error(exc.mensagem_usuario)
+            st.error(exc.mensagem_usuario)
 
     info = st.session_state.get("ultimo_etl")
     if not info:
         return
-    st.sidebar.caption(f"Última carga: {info['quando']}")
-    with st.sidebar.expander("Conferência da carga"):
+    st.caption(f"Última carga: {info['quando']}")
+    with st.expander("Conferência da carga"):
         for f in info["rel"].fontes:
             # O ajuste de prazo é a única correção que o ETL faz nos números da
             # origem, então ele aparece aqui em vez de ficar silencioso.
@@ -217,7 +222,7 @@ def _sidebar() -> None:
                 f"Oficinas: {f.oficinas} · Sem data: {f.sem_data}{prazos}"
             )
 
-    with st.sidebar.expander("Histórico de cargas"):
+    with st.expander("Histórico de cargas"):
         try:
             hist = database.historico_cargas(_engine(), limite=15)
         except GestaoFluxoError as exc:
@@ -829,7 +834,20 @@ def _carga_inicial() -> None:
 
 def main() -> None:
     ui.injetar_tema()
-    ui.cabecalho("Fluxo de Produção", "Acompanhamento, recebimento, envios e metas")
+
+    # Navbar (barra fixa no topo): marca à esquerda, menu de seções ao centro
+    # e a ação "Dados" à direita — substitui a antiga sidebar. As colunas do
+    # meio e da direita nascem vazias aqui e só são preenchidas mais abaixo,
+    # depois de confirmado que há banco pronto (mesma regra da sidebar antiga,
+    # que também não aparecia na tela de carga inicial).
+    # Proporções: a marca pede pouca largura (logo + título curto), o menu leva
+    # a maior fatia para centralizar de fato na faixa, e a ação fica com o
+    # mínimo para o botão não esticar de ponta a ponta.
+    with st.container(key="navbar"):
+        col_brand, col_nav, col_acoes = st.columns(
+            [1.5, 4, 1.2], vertical_alignment="center")
+        with col_brand:
+            ui.cabecalho("Fluxo de Produção")
 
     # Abrir o engine e olhar o schema é a primeira coisa que toca disco. Falhando
     # aqui não há painel para mostrar, então esta checagem tem tratamento próprio
@@ -851,22 +869,35 @@ def main() -> None:
         _carga_inicial()
         return
 
-    with _blindar("Barra lateral"):
-        _sidebar()
+    # `col_nav` e `col_acoes` nasceram vazias lá em cima, dentro da navbar — só
+    # dá para preenchê-las depois de saber que há banco pronto (mesma regra que
+    # a sidebar antiga já seguia: nada de navegação numa tela sem dado nenhum).
+    renderizadores = {
+        "Acompanhamento": _aba_acompanhamento,
+        "Recebimento": lambda: _aba_analise("recebimento"),
+        "Envios": lambda: _aba_analise("envios"),
+        "Metas": _aba_metas,
+    }
+    with col_nav:
+        aba_ativa = st.segmented_control(
+            "Navegação", list(renderizadores), default="Acompanhamento",
+            required=True, label_visibility="collapsed", key="aba_ativa",
+        )
+    # `use_container_width=False`: o botão se mede pelo próprio rótulo. Esticado
+    # na coluna inteira ele virava uma barra larga solta no canto, que era boa
+    # parte do desconforto do layout anterior.
+    with col_acoes, _blindar("Dados"):
+        with st.popover("Dados", use_container_width=False):
+            _menu_dados()
 
-    # Cada aba é blindada individualmente: o Streamlit executa o corpo das quatro
-    # a cada interação, então sem isolamento um erro em Acompanhamento apagaria
-    # também Recebimento, Envios e Metas — abas que não têm relação com a falha.
-    abas = st.tabs(["Acompanhamento", "Recebimento", "Envios", "Metas"])
-    renderizadores = (
-        ("Acompanhamento", _aba_acompanhamento),
-        ("Recebimento", lambda: _aba_analise("recebimento")),
-        ("Envios", lambda: _aba_analise("envios")),
-        ("Metas", _aba_metas),
-    )
-    for aba, (nome, render) in zip(abas, renderizadores):
-        with aba, _blindar(nome):
-            render()
+    # Sticky/scroll e hamburguer só fazem sentido com a barra já montada, então
+    # o script entra depois de as três colunas estarem preenchidas.
+    ui.navbar_comportamento()
+
+    # Só a aba ativa é blindada e renderizada — mesmo isolamento de falha que
+    # as antigas `st.tabs` já davam (um erro aqui não derruba a navbar acima).
+    with _blindar(aba_ativa):
+        renderizadores[aba_ativa]()
 
 
 if __name__ == "__main__":
