@@ -1,9 +1,17 @@
-"""Migração one-time do SQLite local para o Postgres do Supabase.
+"""Cópia verificada de banco a banco: migração para o Supabase e backup de volta.
 
-    python -m gestao_fluxo.db.migracao            # migra e confere
+    python -m gestao_fluxo.db.migracao            # SQLite  -> Postgres (migra)
     python -m gestao_fluxo.db.migracao --conferir # só confere, não grava
+    python -m gestao_fluxo.db.migracao --backup   # Postgres -> SQLite datado
 
-O que precisa sobreviver a esta migração não é "os dados" em abstrato: é a
+A migração para o Supabase já foi feita e conferida; o que mantém este módulo
+vivo é o `--backup`. Copiar tabela a tabela e conferir linhas e somas nas duas
+pontas é a mesma operação nos dois sentidos — `migrar()` recebe dois engines
+quaisquer e o `dialeto` resolve o resto, então o caminho de volta não custa
+código novo. O backup sai em SQLite justamente por ser um arquivo único que
+abre em qualquer ferramenta, sem servidor e sem credencial.
+
+O que precisa sobreviver a esta cópia não é "os dados" em abstrato: é a
 **identidade incremental** de cada linha. O par (hash_linha, ocorrencia) é o que
 faz re-subir uma planilha já carregada não inserir nada. Por isso os hashes são
 copiados literalmente, nunca recalculados no destino — qualquer diferença de
@@ -23,6 +31,8 @@ from __future__ import annotations
 import argparse
 import sys
 from dataclasses import dataclass, field
+from datetime import datetime
+from pathlib import Path
 
 import pandas as pd
 from sqlalchemy.engine import Engine
@@ -163,6 +173,16 @@ def migrar(origem: Engine, destino: Engine, *, forcar: bool = False) -> list:
     return [_copiar(origem, destino, tabela) for tabela in ORDEM]
 
 
+def caminho_backup(agora: datetime | None = None) -> Path:
+    """Arquivo de destino do backup, carimbado com a hora de início.
+
+    O carimbo vai até o minuto: dois backups no mesmo minuto colidiriam, e é
+    exatamente o que deve acontecer — `migrar()` recusa destino povoado, então a
+    colisão vira erro em vez de sobrescrever silenciosamente um backup bom.
+    """
+    return config.BACKUPS_DIR / f"fluxo_producao_{agora or datetime.now():%Y%m%d-%H%M}.db"
+
+
 def main(argv: list | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--origem", default=str(config.DB_PATH),
@@ -171,38 +191,57 @@ def main(argv: list | None = None) -> int:
                         help="só compara origem e destino, sem gravar")
     parser.add_argument("--forcar", action="store_true",
                         help="migra mesmo com o destino já povoado")
+    parser.add_argument("--backup", action="store_true",
+                        help="inverte o sentido: copia o Postgres para um SQLite "
+                             "datado em data/backups/")
     args = parser.parse_args(argv)
+
+    if args.backup and args.conferir:
+        print("--conferir não se aplica a --backup: o destino é um arquivo novo, "
+              "que por definição ainda não tem nada a comparar.", file=sys.stderr)
+        return 2
 
     url = config.url_do_banco()
     if url.startswith("sqlite"):
-        print("DATABASE_URL não está definida — o destino seria o próprio SQLite.\n"
-              "Configure o .env antes de migrar (ver .env.example).", file=sys.stderr)
+        ponta = "a origem do backup" if args.backup else "o destino"
+        print(f"DATABASE_URL não está definida — {ponta} seria o próprio SQLite.\n"
+              "Configure o .env antes de rodar (ver .env.example).", file=sys.stderr)
         return 2
 
-    origem = database.get_engine(args.origem)
-    destino = database.get_engine()
-    print(f"Origem : {args.origem}")
-    print(f"Destino: {url.rsplit('@', 1)[-1]}\n")   # sem a senha
+    servidor = url.rsplit("@", 1)[-1]   # sem a senha
+    if args.backup:
+        arquivo = caminho_backup()
+        origem, destino = database.get_engine(), database.get_engine(arquivo)
+        acao, rotulo_origem, rotulo_destino = "Backup", servidor, str(arquivo)
+    else:
+        origem, destino = database.get_engine(args.origem), database.get_engine()
+        acao, rotulo_origem, rotulo_destino = "Migração", args.origem, servidor
+
+    print(f"Origem : {rotulo_origem}")
+    print(f"Destino: {rotulo_destino}\n")
 
     try:
         conferencias = (conferir(origem, destino) if args.conferir
                         else migrar(origem, destino, forcar=args.forcar))
     except Exception as exc:  # noqa: BLE001
-        print(f"Migração abortada: {exc}", file=sys.stderr)
+        print(f"{acao} abortada: {exc}", file=sys.stderr)
         return 1
 
     for c in conferencias:
         print(c.descrever())
 
-    if all(c.confere for c in conferencias):
-        print("\nConferência OK — linhas e somas idênticas nas duas pontas.")
+    if not all(c.confere for c in conferencias):
+        print(f"\nCONFERÊNCIA FALHOU. A origem ({rotulo_origem}) não foi tocada — "
+              "corrija e rode de novo.", file=sys.stderr)
+        return 1
+
+    print("\nConferência OK — linhas e somas idênticas nas duas pontas.")
+    if args.backup:
+        print(f"Backup gravado em {rotulo_destino}")
+    else:
         print("Falta o teste decisivo: suba no app uma planilha JÁ carregada e "
               "confirme que a prévia acusa 0 novas.")
-        return 0
-
-    print("\nCONFERÊNCIA FALHOU. O SQLite de origem não foi tocado — "
-          "corrija e rode de novo.", file=sys.stderr)
-    return 1
+    return 0
 
 
 if __name__ == "__main__":

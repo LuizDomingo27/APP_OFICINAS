@@ -25,12 +25,6 @@ class FonteDeDadosError(GestaoFluxoError):
     mensagem_usuario = "Não foi possível ler uma das planilhas de origem. Verifique o arquivo e tente novamente."
 
 
-class ValidacaoDadosError(GestaoFluxoError):
-    """Dados violam uma regra estrutural esperada (chave, coluna faltando)."""
-
-    mensagem_usuario = "Os dados de origem não passaram na validação. Confira o log de qualidade."
-
-
 class ETLError(GestaoFluxoError):
     """Falha durante a transformação/carga do ETL."""
 

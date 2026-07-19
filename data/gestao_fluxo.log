@@ -1,8 +1,0 @@
-2026-07-18 16:21:33,384 | ERROR    | gestao_fluxo.app | [7328ac] falha inesperada em Aba X
-Traceback (most recent call last):
-  File "C:\Users\luiz-\Downloads\APP_MANAGER\app.py", line 46, in _blindar
-    yield
-  File "<string>", line 10, in <module>
-    raise ValueError('bug qualquer')
-ValueError: bug qualquer
-2026-07-18 16:21:33,958 | ERROR    | gestao_fluxo.app | Aba Y: detalhe tecnico

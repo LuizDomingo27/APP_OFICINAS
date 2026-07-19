@@ -17,6 +17,10 @@ DATA_DIR: Path = PROJECT_ROOT / "data"
 DB_PATH: Path = DATA_DIR / "fluxo_producao.db"
 SCHEMA_DIR: Path = PACKAGE_DIR / "db"
 
+#: Onde caem os backups datados do Postgres (ver `db/migracao.py --backup`).
+#: Fora do controle de versão: são cópias grandes e regeneráveis do banco.
+BACKUPS_DIR: Path = DATA_DIR / "backups"
+
 
 def caminho_schema(arquivo: str) -> Path:
     """Caminho do schema do dialeto em uso — ver `db/dialeto.py`."""
