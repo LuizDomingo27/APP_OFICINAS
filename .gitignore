@@ -216,3 +216,9 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Bancos locais e backups. O banco de produção é o Postgres do Supabase; estes
+# arquivos são cópias regeneráveis (ver db/migracao.py --backup) e pesam alguns
+# MB cada — versioná-los incha o repositório sem proteger nada.
+data/*.db
+data/backups/

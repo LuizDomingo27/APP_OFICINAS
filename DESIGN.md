@@ -58,10 +58,13 @@ Contraste medido no runtime: mínimo 5.6:1 (muted sobre superfície 2), tinta a
 
 ## Onde vive
 
-- Tema global do Streamlit: [.streamlit/config.toml](.streamlit/config.toml)
 - CSS e componentes: [gestao_fluxo/ui.py](gestao_fluxo/ui.py)
 - Paleta dos gráficos: [gestao_fluxo/charts.py](gestao_fluxo/charts.py)
 
+Não existe `.streamlit/config.toml`: o tema inteiro é CSS injetado por `ui.py`,
+e o único ajuste de página é o `set_page_config` em [app.py](app.py). Manter o
+tema num só lugar evita a paleta viver em duas fontes que saem de sincronia.
+
 Para trocar a paleta, ajuste os hex em `ui.py` (`VERDE`, `ACENTOS`, `SUPERFICIE`
-e vizinhos), espelhe as superfícies em `charts.py` e atualize o `config.toml` —
-o restante herda via variáveis CSS (`--verde`, `--surface`, `--accent`).
+e vizinhos) e espelhe as superfícies em `charts.py` — o restante herda via
+variáveis CSS (`--verde`, `--surface`, `--accent`).
