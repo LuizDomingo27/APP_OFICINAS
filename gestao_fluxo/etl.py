@@ -182,12 +182,19 @@ def extrair_fonte(fonte: str, caminho: Path | None = None,
     # `om` como object para o SQLite receber None no lugar de pd.NA.
     out["om"] = out["om"].astype("object").where(out["om"].notna(), None)
 
+    # Campos extras da fonte (deadline, envio) — todos datas, ver config.CAMPOS_EXTRA.
     corrigidos = 0
-    if "deadline" in achadas:
-        originais = pd.to_datetime(df[achadas["deadline"]], errors="coerce")
-        prazos = corrigir_ano_deadline(originais)
-        corrigidos = int((prazos != originais).sum())
-        out["deadline"] = datas_para_iso(prazos)
+    for campo in config.CAMPOS_EXTRA.get(fonte, ()):
+        valores = pd.to_datetime(df[achadas[campo]], errors="coerce")
+        if campo == "deadline":
+            prazos = corrigir_ano_deadline(valores)
+            # Só conta o que mudou de fato: `NaT != NaT` é True no pandas, e sem os
+            # dois `notna` a conferência da carga reportaria como "prazo corrigido"
+            # toda linha que chegou simplesmente sem prazo nenhum.
+            corrigidos = int(
+                (valores.notna() & prazos.notna() & (prazos != valores)).sum())
+            valores = prazos
+        out[campo] = datas_para_iso(valores)
 
     out = out[config.campos_da_fonte(fonte)]
     # Atributo (e não coluna) porque é metadado da carga, não do fato: alimenta o

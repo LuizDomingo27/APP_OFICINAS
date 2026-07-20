@@ -49,8 +49,23 @@ def planilhas(tmp_path) -> dict:
         "FRETE": ["RA", "RA", "RA"],
         "SITUAÇÃO": ["Enviado", "Enviado", "Corte"],
     })
+    # Previsão: agenda do retorno. As três linhas cobrem os três casos que a aba
+    # precisa distinguir — dentro do prazo, prazo estourado e sem prazo cadastrado.
+    previsao = pd.DataFrame({
+        "ORDEM MESTRE": [1, 2, 3],
+        "OFICINA": ["Oficina A", "Oficina B", "Oficina B"],
+        "ENVIO": ["2026-07-06", "2026-07-06", "2026-07-08"],
+        "QTD": [100, 200, 50],
+        "MINUTOS": [1000.0, 2000.0, 500.0],
+        # A 2ª estoura (volta depois do prazo); a 3ª não tem prazo cadastrado.
+        "DEAD LINE": ["2026-08-01", "2026-07-10", None],
+        "MP": ["JEANS", "Malha", "TEAR"],
+        "RECEBIMENTO": ["2026-07-20", "2026-07-25", "2026-08-03"],
+    })
+
     caminhos = {}
-    for fonte, df in (("acompanhamento", acomp), ("recebimento", receb), ("envios", envios)):
+    for fonte, df in (("acompanhamento", acomp), ("recebimento", receb),
+                      ("envios", envios), ("previsao", previsao)):
         destino = tmp_path / f"{fonte}.xlsx"
         df.to_excel(destino, index=False)
         caminhos[fonte] = destino

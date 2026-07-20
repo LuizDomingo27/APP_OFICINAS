@@ -27,8 +27,8 @@ DROP TABLE IF EXISTS recebimentos;
 DROP TABLE IF EXISTS ordens_eventos;
 DROP TABLE IF EXISTS ordens;
 DROP TABLE IF EXISTS oficinas_apelidos;
-DROP TABLE IF EXISTS oficinas;
 DROP TABLE IF EXISTS materias_primas;
+DROP TABLE IF EXISTS oficinas;
 
 -- Acompanhamento não é histórico: cada linha é uma ordem **ainda em aberto**, e
 -- ela some da planilha quando a ordem é recebida. Por isso esta tabela é limpa e
@@ -76,9 +76,32 @@ CREATE TABLE IF NOT EXISTS fato_envios (
     carga_id   INTEGER
 );
 
+-- Previsão: a agenda do que ainda vai voltar das oficinas. Como o Acompanhamento,
+-- é um retrato do momento (a ordem some da planilha quando volta), e por isso a
+-- tabela é substituída por inteiro a cada carga.
+--
+-- Aqui `data` é a data PREVISTA de recebimento, e não o envio: é ela que responde
+-- "o que temos para receber nesta semana", que é a pergunta da tela. O envio ganha
+-- coluna própria justamente porque perdeu o lugar de `data`.
+CREATE TABLE IF NOT EXISTS fato_previsao (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    oficina    TEXT    NOT NULL,
+    data       TEXT,                            -- ISO 'YYYY-MM-DD' (coluna RECEBIMENTO)
+    mp         TEXT    NOT NULL,
+    qtd_pecas  REAL    NOT NULL DEFAULT 0,
+    minutos    REAL    NOT NULL DEFAULT 0,
+    om         INTEGER,                         -- ORDEM MESTRE
+    deadline   TEXT,                            -- ISO 'YYYY-MM-DD' (coluna DEAD LINE)
+    envio      TEXT,                            -- ISO 'YYYY-MM-DD' (coluna ENVIO)
+    hash_linha TEXT,
+    ocorrencia INTEGER DEFAULT 1,
+    carga_id   INTEGER
+);
+
 CREATE INDEX IF NOT EXISTS ix_acomp_data  ON fato_acompanhamento (data);
 CREATE INDEX IF NOT EXISTS ix_receb_data  ON fato_recebimento (data);
 CREATE INDEX IF NOT EXISTS ix_envios_data ON fato_envios (data);
+CREATE INDEX IF NOT EXISTS ix_prev_data   ON fato_previsao (data);
 
 -- A identidade da linha vive num índice único (e não numa constraint inline)
 -- porque o SQLite não permite acrescentar UNIQUE via ALTER TABLE: bancos antigos,
@@ -87,6 +110,7 @@ CREATE INDEX IF NOT EXISTS ix_envios_data ON fato_envios (data);
 CREATE UNIQUE INDEX IF NOT EXISTS ux_acomp_linha  ON fato_acompanhamento (hash_linha, ocorrencia);
 CREATE UNIQUE INDEX IF NOT EXISTS ux_receb_linha  ON fato_recebimento (hash_linha, ocorrencia);
 CREATE UNIQUE INDEX IF NOT EXISTS ux_envios_linha ON fato_envios (hash_linha, ocorrencia);
+CREATE UNIQUE INDEX IF NOT EXISTS ux_prev_linha   ON fato_previsao (hash_linha, ocorrencia);
 
 -- Metas: chave/valor. Fica FORA dos DROPs acima de propósito — recarregar as
 -- planilhas não pode apagar as metas cadastradas pelo time.

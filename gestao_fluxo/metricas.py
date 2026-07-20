@@ -6,8 +6,18 @@ Responsabilidades:
     MÉTRICAS   -> totais, médias (dia/semana/mês) e variação vs. período anterior
     AGREGAÇÕES -> séries prontas para os gráficos (por oficina, por MP, por dia)
 
-Cards e gráficos são calculados a partir do mesmo DataFrame filtrado, então nunca
-divergem entre si.
+Totais, gráficos e tabelas saem todos do mesmo DataFrame filtrado, então nunca
+divergem entre si. As médias vêm em dois sabores, e a distinção é o coração deste
+módulo:
+
+* `calcular_medias_periodo` (diária e semanal) responde "como foi o recorte que
+  estou olhando" — acompanha mês, semana, MP e oficina, e compara com o recorte
+  equivalente do mês anterior.
+* `calcular_media_mensal` responde "qual é o padrão da casa" — sai do histórico
+  inteiro e não reage a filtro nenhum. Média mensal do mês filtrado seria o total
+  do próprio mês dividido por 1, isto é, o número que o card de total já mostra;
+  por isso este card é referência, e o delta dele mede o quanto o mês escolhido
+  foge desse padrão.
 """
 from __future__ import annotations
 
@@ -33,9 +43,11 @@ def carregar_fato(engine: Engine, fonte: str) -> pd.DataFrame:
     tabela = config.FONTES[fonte]["tabela"]
     campos = config.campos_da_fonte(fonte)
     df = database.read_sql(f"SELECT {', '.join(campos)} FROM {tabela}", engine)
-    df["data"] = pd.to_datetime(df["data"], errors="coerce")
-    if "deadline" in df.columns:
-        df["deadline"] = pd.to_datetime(df["deadline"], errors="coerce")
+    # `data` e os campos extras (deadline, envio) são todos datas em ISO — ver
+    # config.CAMPOS_EXTRA. Converter em bloco evita que uma fonte nova com data
+    # extra chegue à tela como texto e só falhe na hora de comparar prazos.
+    for coluna in ("data", *config.CAMPOS_EXTRA.get(fonte, ())):
+        df[coluna] = pd.to_datetime(df[coluna], errors="coerce")
     df["qtd_pecas"] = pd.to_numeric(df["qtd_pecas"], errors="coerce").fillna(0.0)
     df["minutos"] = pd.to_numeric(df["minutos"], errors="coerce").fillna(0.0)
     return df
@@ -88,18 +100,44 @@ def semanas_do_mes(ano: int, mes: int) -> list:
     return semanas
 
 
-def periodo_anterior(inicio: date, fim: date) -> tuple:
-    """Período imediatamente anterior ao intervalo dado.
+def _numero_da_semana(inicio: date, fim: date) -> int | None:
+    """Número da semana quando o intervalo é exatamente uma semana do mês."""
+    if (inicio.year, inicio.month) != (fim.year, fim.month):
+        return None
+    for s in semanas_do_mes(inicio.year, inicio.month):
+        if (s.inicio, s.fim) == (inicio, fim):
+            return s.numero
+    return None
 
-    Quando o intervalo é um mês calendário inteiro, o anterior é o **mês anterior
-    inteiro** — comparar julho (31 dias) com "os 31 dias antes de julho" jogaria
-    o dia 31 de maio dentro da base de comparação e distorceria a variação.
-    Para qualquer outro recorte (uma semana, por exemplo), usa a mesma duração.
+
+def periodo_anterior(inicio: date, fim: date) -> tuple:
+    """Recorte equivalente do mês anterior — a base de comparação dos deltas.
+
+    Três casos, do mais específico para o mais genérico:
+
+    * **Mês calendário inteiro** -> mês anterior inteiro. Comparar julho (31 dias)
+      com "os 31 dias antes de julho" jogaria o dia 31 de maio dentro da base e
+      distorceria a variação.
+    * **Uma semana do mês** -> a semana de **mesmo número** do mês anterior (S3 de
+      julho contra S3 de junho), e não a semana imediatamente anterior: o time
+      compara com o mesmo momento do ciclo do mês passado. Se o mês anterior não
+      chega àquele número (um mês curto pode ter 5 semanas onde o atual tem 6),
+      cai para a última semana dele — sem isso a semana ficaria sem comparação
+      nenhuma.
+    * **Qualquer outro intervalo** -> mesma duração, imediatamente antes.
     """
     ultimo_dia = calendar.monthrange(inicio.year, inicio.month)[1]
     if inicio.day == 1 and fim.day == ultimo_dia and inicio.month == fim.month:
         fim_ant = inicio - timedelta(days=1)
         return date(fim_ant.year, fim_ant.month, 1), fim_ant
+
+    numero = _numero_da_semana(inicio, fim)
+    if numero is not None:
+        fim_mes_ant = date(inicio.year, inicio.month, 1) - timedelta(days=1)
+        semanas = semanas_do_mes(fim_mes_ant.year, fim_mes_ant.month)
+        equivalente = next((s for s in semanas if s.numero == numero), semanas[-1])
+        return equivalente.inicio, equivalente.fim
+
     duracao = (fim - inicio).days + 1
     novo_fim = inicio - timedelta(days=1)
     return novo_fim - timedelta(days=duracao - 1), novo_fim
@@ -128,7 +166,13 @@ def filtrar(df: pd.DataFrame, inicio: date | None = None, fim: date | None = Non
 # =========================================================================== #
 @dataclass
 class Media:
-    """Média do período atual com a variação percentual contra o anterior."""
+    """Média do recorte filtrado + a mesma média no recorte equivalente anterior.
+
+    `atual` é o número que o card mostra e acompanha TODOS os filtros (mês, semana,
+    MP, oficina). `anterior` é o mesmo cálculo sobre o recorte devolvido por
+    `periodo_anterior`, com os mesmos filtros aplicados — comparar o mês filtrado
+    por uma oficina contra o mês anterior inteiro daria um delta sem sentido.
+    """
 
     atual: float = 0.0
     anterior: float = 0.0
@@ -142,12 +186,48 @@ class Media:
 
 
 @dataclass
+class MediaReferencia:
+    """Média mensal de toda a base + o quanto o mês escolhido foge desse padrão.
+
+    `historica` é o número do card e é imune a qualquer filtro: um parâmetro de
+    referência que muda a cada clique de MP ou semana deixa de ser referência.
+    `mes` é o total do mês selecionado (média mensal de um mês só = o próprio
+    total) e existe apenas para alimentar a variação contra a referência.
+    """
+
+    historica: float = 0.0
+    mes: float = 0.0
+
+    @property
+    def variacao(self) -> float | None:
+        """Quanto o mês está acima/abaixo do padrão da base, em %."""
+        if not self.historica:
+            return None
+        return (self.mes - self.historica) / self.historica * 100
+
+
+@dataclass
 class Metricas:
     total_pecas: float = 0.0
     total_minutos: float = 0.0
     linhas: int = 0
     oficinas: int = 0
-    medias: dict = field(default_factory=dict)  # {"dia_pecas": Media, ...}
+
+
+def _chave_semana_do_mes(datas: pd.Series) -> pd.Series:
+    """(ano, mês, nº da semana) de cada data — as MESMAS semanas de `semanas_do_mes`.
+
+    Vetorizado em vez de chamar `semanas_do_mes` por linha, mas a regra é idêntica:
+    a semana 1 vai do dia 1 ao primeiro domingo e as seguintes são segunda a
+    domingo, recortadas no mês. Usar `to_period("W")` aqui (semana ISO, que
+    atravessa a virada do mês) faria a média semanal do card divergir do gráfico
+    de semanas, que já usa o recorte do mês.
+    """
+    dia = datas.dt.day
+    primeiro_do_mes = datas - pd.to_timedelta(dia - 1, unit="D")
+    dias_da_semana1 = 7 - primeiro_do_mes.dt.weekday
+    numero = ((dia - dias_da_semana1 - 1) // 7 + 2).where(dia > dias_da_semana1, 1)
+    return datas.dt.year * 10000 + datas.dt.month * 100 + numero
 
 
 def _media_por(df: pd.DataFrame, coluna: str, chave: str) -> float:
@@ -162,28 +242,68 @@ def _media_por(df: pd.DataFrame, coluna: str, chave: str) -> float:
     if chave == "dia":
         periodos = d["data"].dt.date
     elif chave == "semana":
-        periodos = d["data"].dt.to_period("W")
+        periodos = _chave_semana_do_mes(d["data"])
     else:
         periodos = d["data"].dt.to_period("M")
     n = periodos.nunique()
     return float(d[coluna].sum() / n) if n else 0.0
 
 
-def calcular_metricas(atual: pd.DataFrame, anterior: pd.DataFrame) -> Metricas:
-    """Totais do período atual + as 3 médias, cada uma comparada com o anterior."""
-    medias = {
-        f"{chave}_{rotulo}": Media(_media_por(atual, coluna, chave),
-                                   _media_por(anterior, coluna, chave))
-        for chave in ("dia", "semana", "mes")
-        for rotulo, coluna in (("pecas", "qtd_pecas"), ("minutos", "minutos"))
-    }
+def calcular_metricas(atual: pd.DataFrame) -> Metricas:
+    """Totais do recorte filtrado — estes SIM acompanham semana, MP e oficina."""
     return Metricas(
         total_pecas=float(atual["qtd_pecas"].sum()),
         total_minutos=float(atual["minutos"].sum()),
         linhas=len(atual),
         oficinas=int(atual["oficina"].nunique()),
-        medias=medias,
     )
+
+
+UNIDADES = (("pecas", "qtd_pecas"), ("minutos", "minutos"))
+
+
+def calcular_medias_periodo(historico: pd.DataFrame, inicio: date, fim: date,
+                            mps: list | None = None,
+                            oficinas: list | None = None) -> dict:
+    """Médias diária e semanal do recorte filtrado, contra o equivalente anterior.
+
+    Recebe o histórico **inteiro**, nunca um recorte: a função precisa enxergar o
+    período anterior, que por definição está fora do que a tela filtrou. Os mesmos
+    `mps`/`oficinas` são aplicados aos dois lados para que o delta compare coisas
+    comparáveis.
+
+    Chaves: `dia_pecas`, `dia_minutos`, `semana_pecas`, `semana_minutos`. Média
+    mensal não vive aqui — ver `calcular_media_mensal`.
+    """
+    ini_ant, fim_ant = periodo_anterior(inicio, fim)
+    atual = filtrar(historico, inicio, fim, mps, oficinas)
+    anterior = filtrar(historico, ini_ant, fim_ant, mps, oficinas)
+    return {
+        f"{chave}_{rotulo}": Media(
+            atual=_media_por(atual, coluna, chave),
+            anterior=_media_por(anterior, coluna, chave),
+        )
+        for chave in ("dia", "semana")
+        for rotulo, coluna in UNIDADES
+    }
+
+
+def calcular_media_mensal(historico: pd.DataFrame, mes_inicio: date,
+                          mes_fim: date) -> dict:
+    """Média mensal de toda a base + o quanto o mês escolhido foge dela.
+
+    Não aceita `mps`/`oficinas` de propósito: é o parâmetro de referência do time
+    e precisa ser o mesmo número em qualquer combinação de filtros. Chaves:
+    `mes_pecas` e `mes_minutos`.
+    """
+    mes = filtrar(historico, mes_inicio, mes_fim)
+    return {
+        f"mes_{rotulo}": MediaReferencia(
+            historica=_media_por(historico, coluna, "mes"),
+            mes=_media_por(mes, coluna, "mes"),
+        )
+        for rotulo, coluna in UNIDADES
+    }
 
 
 # =========================================================================== #
@@ -452,6 +572,127 @@ def totais_fluxo_mp(df: pd.DataFrame) -> TotaisFluxoMP:
         progresso=float(df["progresso_pecas"].sum()),
         sem_envio=float(df["recebido_sem_envio"].sum()),
     )
+
+
+# =========================================================================== #
+# PREVISÃO — O QUE ESTÁ AGENDADO PARA VOLTAR
+# =========================================================================== #
+# Diferente das abas de análise, aqui não se mede média nem variação: previsão não
+# tem período anterior com que se comparar. O que a base responde é "quanto vai
+# voltar, quando, e quanto disso já está fora do prazo".
+#
+# Duas medidas de risco convivem e são contadas separadamente (ver
+# config.STATUS_PREV_*). Uma ordem pode estar nas duas ao mesmo tempo, então somá-las
+# num total único produziria um número maior que a quantidade real de ordens.
+
+
+def classificar_previsao(df: pd.DataFrame, hoje: date | None = None) -> pd.DataFrame:
+    """Acrescenta `dias_prazo`, `atraso_previsto`, `fura_prazo` e `vencida`.
+
+    `dias_prazo` é quanto falta do prazo até hoje (negativo = já venceu).
+    `atraso_previsto` é quantos dias a data prevista de retorno passa do prazo
+    (negativo = a previsão cabe dentro do prazo).
+
+    Ordem sem prazo cadastrado não entra em nenhum dos dois riscos: a ausência do
+    dado é problema de cadastro, e transformá-la em atraso inventaria um número
+    que ninguém consegue conferir na planilha. Mesma regra de `classificar_prazo`.
+    """
+    hoje = hoje or date.today()
+    out = df.copy()
+    if out.empty:
+        for coluna in ("dias_prazo", "atraso_previsto"):
+            out[coluna] = pd.Series(dtype="float")
+        for coluna in ("fura_prazo", "vencida"):
+            out[coluna] = pd.Series(dtype="bool")
+        return out
+
+    agora = pd.Timestamp(hoje)
+    vazio = pd.Series(pd.NaT, index=out.index)
+    prazo = out["deadline"] if "deadline" in out.columns else vazio
+    previsto = out["data"]
+
+    out["dias_prazo"] = (prazo - agora).dt.days
+    out["atraso_previsto"] = (previsto - prazo).dt.days
+    # Sem prazo, a diferença é NaN e a comparação devolve False — que é exatamente
+    # a regra desejada: a linha fica fora dos dois riscos, sem virar atraso.
+    out["fura_prazo"] = out["atraso_previsto"] > 0
+    out["vencida"] = out["dias_prazo"] < 0
+    return out
+
+
+def _contar_ordens(om: pd.Series) -> int:
+    """Ordens distintas no recorte, com cada linha sem OM contando por uma.
+
+    Hoje a origem traz uma ordem mestre por linha, mas contamos as distintas: se a
+    planilha passar a quebrar uma ordem em parcelas, o número continua dizendo
+    "ordens" e não "linhas". Linha sem ordem cadastrada conta como uma — descartá-la
+    sumiria com produção real do total.
+    """
+    return int(om.nunique()) + int(om.isna().sum())
+
+
+@dataclass
+class ResumoPrevisao:
+    """Consolidado da previsão, já classificada por `classificar_previsao`."""
+
+    ordens: int = 0
+    pecas: float = 0.0
+    minutos: float = 0.0
+    oficinas: int = 0
+    fura_prazo: int = 0          # previsão de retorno posterior ao prazo
+    vencidas: int = 0            # prazo já passou e a ordem não voltou
+    pecas_fura_prazo: float = 0.0
+    pecas_vencidas: float = 0.0
+    sem_prazo: int = 0           # ordens sem DEAD LINE cadastrado
+
+
+def resumo_previsao(df: pd.DataFrame) -> ResumoPrevisao:
+    """Totais da previsão no recorte atual. Espera um df já classificado."""
+    if df.empty:
+        return ResumoPrevisao()
+
+    fura = df[df["fura_prazo"]]
+    vencidas = df[df["vencida"]]
+    sem_prazo = (df["deadline"].isna() if "deadline" in df.columns
+                 else pd.Series(True, index=df.index))
+    return ResumoPrevisao(
+        ordens=_contar_ordens(df["om"]),
+        pecas=float(df["qtd_pecas"].sum()),
+        minutos=float(df["minutos"].sum()),
+        oficinas=int(df["oficina"].nunique()),
+        fura_prazo=len(fura),
+        vencidas=len(vencidas),
+        pecas_fura_prazo=float(fura["qtd_pecas"].sum()),
+        pecas_vencidas=float(vencidas["qtd_pecas"].sum()),
+        sem_prazo=int(sem_prazo.sum()),
+    )
+
+
+COLUNAS_CONSOL_MP = ["mp", "qtd_pecas", "minutos", "ordens"]
+
+
+def consolidado_por_mp(df: pd.DataFrame) -> pd.DataFrame:
+    """Uma linha por MP: peças, minutos e quantidade de ordens previstas.
+
+    É a mesma leitura do gráfico de MP, só que com o número na tela e mais a
+    contagem de ordens — o gráfico responde "qual MP pesa mais", a tabela responde
+    "quanto exatamente". Recebe o mesmo DataFrame já filtrado que alimenta cards e
+    gráficos, então os totais fecham com os cards por construção.
+
+    A contagem de ordens usa `_contar_ordens`, a mesma regra do card "Total de
+    ordens". Somar a coluna pode dar mais que o card: uma ordem com MPs diferentes
+    entre as parcelas conta uma vez em cada MP, porque a pergunta aqui é quantas
+    ordens tocam aquela matéria-prima.
+    """
+    if df.empty:
+        return pd.DataFrame(columns=COLUNAS_CONSOL_MP)
+    agg = df.groupby("mp", as_index=False).agg(
+        qtd_pecas=("qtd_pecas", "sum"),
+        minutos=("minutos", "sum"),
+        ordens=("om", _contar_ordens),
+    )
+    return (agg.sort_values("qtd_pecas", ascending=False)
+               .reset_index(drop=True)[COLUNAS_CONSOL_MP])
 
 
 def por_oficina_a_receber(df: pd.DataFrame) -> pd.DataFrame:

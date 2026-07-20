@@ -37,11 +37,12 @@ e qualquer indicador exibido pode ser conferido à mão pela equipe.
 
 ## Visão em uma tela
 
-O app tem **quatro abas**, cada uma filtrada de forma independente:
+O app tem **cinco abas**, cada uma filtrada de forma independente:
 
 | Aba | O que responde | Base de dados | Forma |
 |-----|----------------|---------------|-------|
 | **Acompanhamento** | O que já saiu e ainda não voltou — saldo em aberto, prazos e há quanto tempo cada oficina está devendo | `fato_acompanhamento` (+ Envios/Recebimento no fluxo por MP) | Cards + tabelas (sem gráficos: média de saldo não diz nada) |
+| **Previsão** | Quando o que está fora volta, e quanto disso fura o prazo | `fato_previsao` | Cards + barras (MP / semana / dia) + tabela |
 | **Recebimento** | O que retornou das oficinas — totais, médias e variação vs. período anterior | `fato_recebimento` | Cards + roscas + evolução temporal + tabela |
 | **Envios** | O que foi despachado para corte — mesma estrutura do Recebimento | `fato_envios` | Cards + roscas + evolução temporal + tabela |
 | **Metas** | Onde estamos frente à meta do mês, diluída por dia útil | `fato_recebimento` (realizado) + tabela `metas` | Formulário + cards de necessidade + badges + relógios |
@@ -135,11 +136,13 @@ domínio. Concentra:
 - **Conexão**: `url_do_banco()` decide entre Postgres e SQLite (ver
   [O banco de dados](#o-banco-de-dados)) e reescreve o esquema `postgres://` →
   `postgresql://`. Lê o `.env` opcionalmente via `python-dotenv`.
-- **Mapa `FONTES`**: para cada fonte (acompanhamento / recebimento / envios),
-  qual tabela de destino, qual rótulo, qual **modo de carga** e de qual coluna da
-  planilha sai cada um dos 6 campos do fato.
+- **Mapa `FONTES`**: para cada fonte (acompanhamento / recebimento / envios /
+  previsão), qual tabela de destino, qual rótulo, qual **modo de carga** e de qual
+  coluna da planilha sai cada um dos 6 campos do fato, mais os campos extras de
+  cada uma (`CAMPOS_EXTRA`).
 - **Modos de carga**: `MODO_INCREMENTAL` (acrescenta ao histórico) e
-  `MODO_SUBSTITUICAO` (esvazia e regrava — só o Acompanhamento).
+  `MODO_SUBSTITUICAO` (esvazia e regrava — Acompanhamento e Previsão, os dois
+  retratos do agora).
 - **Regras de prazo**: janela de "vence em breve" (`PRAZO_ALERTA_DIAS = 7`) e os
   quatro status de prazo.
 - **Metas**: as 6 chaves (mês/semana/dia × peças/minutos) e a base que mede o
@@ -242,10 +245,24 @@ prazo defasado → calcular identidade → gravar. Principais funções:
 Regras de leitura e agregação — **pandas puro, nada de Streamlit**. Grupos:
 
 - **Períodos**: meses disponíveis, `semanas_do_mes` (semanas recortadas nos
-  limites do próprio mês), `periodo_anterior` (mês inteiro compara com mês inteiro).
+  limites do próprio mês), `periodo_anterior` — mês inteiro compara com mês
+  inteiro; **semana compara com a semana de mesmo número do mês anterior** (S3 de
+  julho × S3 de junho), caindo para a última semana quando o mês anterior é mais
+  curto.
 - **Filtro**: `filtrar` recorta o fato por intervalo, MPs e oficinas.
-- **Métricas**: `calcular_metricas` (totais + 3 médias, cada uma comparada com o
-  período anterior; média divide só pelos períodos **com movimento**).
+- **Métricas**: `calcular_metricas` (totais do recorte filtrado) e **duas** funções
+  de média, com naturezas deliberadamente diferentes:
+  - `calcular_medias_periodo` (diária e semanal) — **acompanha todos os filtros**
+    (mês, semana, MP, oficina) e compara com o recorte equivalente do mês anterior,
+    com os mesmos filtros aplicados dos dois lados.
+  - `calcular_media_mensal` — média mensal de **todo o histórico**, imune a
+    qualquer filtro. É referência, não recorte: média mensal do mês selecionado
+    seria total ÷ 1 mês, ou seja, o próprio card de total. O delta mede o quanto o
+    mês escolhido foge desse padrão.
+
+  Ambas dividem só pelos períodos **com movimento**, e o denominador semanal usa as
+  mesmas semanas de `semanas_do_mes` (não a semana ISO), para o card não divergir
+  do gráfico de semanas.
 - **Agregações para gráficos**: `por_oficina`, `por_mp`, `por_dia`, `por_semana`.
 - **Acompanhamento**: `classificar_prazo` (status, dias para o prazo, dias em
   aberto), `resumo_a_receber`, `por_oficina_a_receber`.
@@ -316,7 +333,7 @@ Docstring da arquitetura em camadas e a versão do pacote (`__version__`).
 Dashboard Streamlit — **só orquestra**: `metricas` calcula, `charts` desenha, `ui`
 estiliza. Monta a barra lateral (upload de planilhas em dois passos —
 analisar/confirmar —, recarga da pasta, conferência e histórico de cargas) e as
-quatro abas. Cada aba é **blindada individualmente** (`_blindar`): um erro numa
+cinco abas. Cada aba é **blindada individualmente** (`_blindar`): um erro numa
 aba não derruba as outras, e toda falha de domínio vira mensagem amigável com
 código de erro em vez de stack trace.
 
@@ -351,12 +368,20 @@ precisa saber em qual está falando (o `dialeto` resolve):
 | `fato_acompanhamento` | Ordens **ainda em aberto** (já enviadas, não recebidas) + prazo | **Substituição** — é um retrato do agora |
 | `fato_recebimento` | Histórico do que **retornou** das oficinas | Incremental |
 | `fato_envios` | Histórico do que foi **despachado** para corte | Incremental |
+| `fato_previsao` | Agenda do que **ainda vai voltar**, com prazo e envio | **Substituição** — é um retrato do agora |
 | `metas` | 6 metas cadastradas pelo time (chave/valor) | Preservada nas recargas |
 | `cargas` | Log de auditoria: o que entrou, quando, de qual arquivo | Append |
 
 Os 6 campos do fato são `oficina, data, mp, qtd_pecas, minutos, om`; o
-Acompanhamento carrega ainda `deadline`. Datas ficam em ISO `YYYY-MM-DD`. Colunas
-de controle da carga incremental: `hash_linha, ocorrencia, carga_id`.
+Acompanhamento carrega ainda `deadline`, e a Previsão `deadline` e `envio` (ver
+`config.CAMPOS_EXTRA`). Datas ficam em ISO `YYYY-MM-DD`. Colunas de controle da
+carga incremental: `hash_linha, ocorrencia, carga_id`.
+
+Atenção ao campo `data` da Previsão: ele aponta para a coluna **RECEBIMENTO** da
+planilha, e não para ENVIO como nas demais fontes. O evento daquela base é o
+retorno previsto — é ele que responde "o que temos para receber nesta semana",
+que é a pergunta da aba. Filtrar aquela tabela por `data` esperando envio dá um
+recorte silenciosamente errado.
 
 ---
 
@@ -476,6 +501,7 @@ pytest
 | [test_etl.py](tests/test_etl.py) | Normalização, extração, carga incremental, substituição do Acompanhamento, prévia, log de cargas, migração, correção de prazo |
 | [test_metas.py](tests/test_metas.py) | Persistência das metas, dias úteis, diluição, ritmo necessário, prioridade de meta cadastrada vs. diluída |
 | [test_metricas.py](tests/test_metricas.py) | Períodos e semanas, filtros, médias e variação, agregações, classificação de prazo, saldo a receber, fluxo por MP |
+| [test_previsao.py](tests/test_previsao.py) | Extração da previsão (`data` = RECEBIMENTO), substituição da tabela, classificação dos dois riscos de prazo, resumo dos cards, filtros de período/MP |
 | [test_robustez.py](tests/test_robustez.py) | Casos-limite que não podem derrubar a tela (caractere de controle no Excel, coluna ausente) |
 
 ---
@@ -484,7 +510,7 @@ pytest
 
 ```
 APP_OFICINAS/
-├── app.py                      # Dashboard Streamlit (4 abas) — ponto de entrada
+├── app.py                      # Dashboard Streamlit (5 abas) — ponto de entrada
 ├── run_etl.py                  # CLI de carga fora do Streamlit
 ├── requirements.txt
 ├── README.md                   # este arquivo

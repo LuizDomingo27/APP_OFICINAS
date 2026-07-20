@@ -291,21 +291,47 @@ def _cards_totais(m: metricas.Metricas, rotulo: str) -> None:
     ])
 
 
-def _cards_medias(m: metricas.Metricas, unidade: str) -> None:
-    """3 cards (dia/semana/mês) de uma unidade, cada um com a variação percentual."""
-    nome = {"pecas": "peças", "minutos": "minutos"}[unidade]
+UNIDADES = (("pecas", "peças"), ("minutos", "minutos"))
+
+
+def _cards_medias_periodo(medias: dict) -> None:
+    """4 cards (diária e semanal × peças e minutos) do recorte que está na tela.
+
+    Valor e delta respondem à mesma pergunta aqui — os dois saem do recorte
+    filtrado —, ao contrário dos cards de referência logo abaixo.
+    """
     cards = []
-    for i, (chave, titulo) in enumerate(
-        (("dia", "Média diária"), ("semana", "Média semanal"), ("mes", "Média mensal"))
-    ):
-        media = m.medias[f"{chave}_{unidade}"]
-        cards.append({
-            "label": f"{titulo} — {nome}",
-            "valor": ui.fmt_int(media.atual),
-            "sub": ui.delta_html(media.variacao),
-            "accent": ui.ACENTOS[ACENTOS_CICLO[i]],
-        })
+    for i, (unidade, nome) in enumerate(UNIDADES):
+        for j, (chave, titulo) in enumerate(
+            (("dia", "Média diária"), ("semana", "Média semanal"))
+        ):
+            media = medias[f"{chave}_{unidade}"]
+            cards.append({
+                "label": f"{titulo} — {nome}",
+                "valor": ui.fmt_int(media.atual),
+                "sub": ui.delta_html(media.variacao, "vs. período anterior"),
+                "accent": ui.ACENTOS[ACENTOS_CICLO[i * 2 + j]],
+            })
     ui.grade_cards(cards)
+
+
+def _cards_referencia_mensal(medias: dict, rotulo_mes: str) -> None:
+    """2 cards de média mensal — o padrão da base, imune a todos os filtros.
+
+    Ficam fora do bloco acima de propósito: média mensal do mês filtrado seria o
+    próprio total do mês, que a visão geral já mostra. Aqui o valor é o padrão
+    histórico e o delta diz o quanto o mês escolhido se afasta dele.
+    """
+    ui.grade_cards([
+        {
+            "label": f"Média mensal da base — {nome}",
+            "valor": ui.fmt_int(medias[f"mes_{unidade}"].historica),
+            "sub": ui.delta_html(medias[f"mes_{unidade}"].variacao,
+                                 f"{rotulo_mes} vs. essa média"),
+            "accent": ui.ACENTOS["violet"],
+        }
+        for unidade, nome in UNIDADES
+    ])
 
 
 def _aba_analise(fonte: str) -> None:
@@ -326,20 +352,35 @@ def _aba_analise(fonte: str) -> None:
     inicio, fim, mps, oficinas, semanas, rotulo = filtros
 
     atual = metricas.filtrar(df, inicio, fim, mps, oficinas)
+    m = metricas.calcular_metricas(atual)
+
+    # Duas naturezas de média, dois blocos. As de período saem do recorte que está
+    # na tela (inclusive MP e oficina) e comparam com o recorte equivalente do mês
+    # anterior; a mensal sai de `df` cru e é referência fixa da base.
+    ini_mes, fim_mes = semanas[0].inicio, semanas[-1].fim
+    rotulo_mes = metricas.rotulo_mes(ini_mes.year, ini_mes.month)
+    medias = metricas.calcular_medias_periodo(df, inicio, fim, mps, oficinas)
+    referencia = metricas.calcular_media_mensal(df, ini_mes, fim_mes)
     ini_ant, fim_ant = metricas.periodo_anterior(inicio, fim)
-    anterior = metricas.filtrar(df, ini_ant, fim_ant, mps, oficinas)
-    m = metricas.calcular_metricas(atual, anterior)
 
     ui.titulo_secao(f"Visão geral — {rotulo}")
     _cards_totais(m, rotulo)
 
-    ui.titulo_secao("Médias e variação (peças)")
-    _cards_medias(m, "pecas")
-    ui.titulo_secao("Médias e variação (minutos)")
-    _cards_medias(m, "minutos")
+    ui.titulo_secao(f"Médias do período — {rotulo}")
+    _cards_medias_periodo(medias)
     st.caption(
-        f"Comparação contra {ui.fmt_data(ini_ant)} — {ui.fmt_data(fim_ant)}. "
-        "As médias dividem o total pelos períodos com movimento."
+        "Média do recorte filtrado (total ÷ períodos com movimento), acompanhando "
+        "semana, MP e oficina. A variação compara "
+        f"{ui.fmt_data(inicio)} — {ui.fmt_data(fim)} contra "
+        f"{ui.fmt_data(ini_ant)} — {ui.fmt_data(fim_ant)}, com os mesmos filtros."
+    )
+
+    ui.titulo_secao("Referência da base — todo o histórico")
+    _cards_referencia_mensal(referencia, rotulo_mes)
+    st.caption(
+        "Média mensal de toda a base, imune aos filtros — é o parâmetro de "
+        f"comparação. A variação mostra o quanto {rotulo_mes} ficou acima ou "
+        "abaixo desse padrão."
     )
 
     ui.titulo_secao("Granularidade por matéria-prima (MP)")
@@ -684,6 +725,224 @@ def _aba_acompanhamento() -> None:
 
 
 # --------------------------------------------------------------------------- #
+# ABA DE PREVISÃO — o que está agendado para voltar
+# --------------------------------------------------------------------------- #
+# A base de Previsão é a agenda do retorno: cada linha é uma ordem que já saiu e
+# tem data PREVISTA de recebimento. Por isso o período desta aba é filtrado pela
+# data de recebimento, e não pela de envio como nas outras — a pergunta aqui é
+# "o que temos para receber nesta semana", não "o que despachamos".
+#
+# Como no Acompanhamento, não há média nem variação: previsão não tem período
+# anterior com que se comparar. O que a tela mede é volume, distribuição e risco.
+
+_COLUNAS_PREVISAO = {
+    "om": "Ordem mestre", "oficina": "Oficina", "envio": "Envio",
+    "deadline": "Deadline", "qtd_pecas": "Peças", "minutos": "Minutos",
+    "data": "Recebimento", "mp": "MP",
+}
+
+
+def _filtros_previsao(df) -> tuple | None:
+    """(inicio, fim, mps, semanas, rotulo) — recorte sobre a data prevista.
+
+    O padrão é `_PERIODO_TODO` e não o mês mais recente: a previsão atravessa a
+    virada do mês, e abrir a tela já recortada esconderia justamente o que ainda
+    vai voltar no mês seguinte — o oposto do que o gestor abre esta aba para ver.
+
+    O seletor de semana só liga depois de escolhido um mês: "Semana 3" não
+    significa nada sem ele.
+    """
+    meses = metricas.meses_disponiveis(df)
+    if not meses:
+        return None
+
+    col_mes, col_sem, col_mp = st.columns([1.3, 1.8, 1.6])
+    escolha = col_mes.selectbox(
+        "Mês do recebimento", [_PERIODO_TODO] + meses, key="mes_previsao",
+        format_func=lambda m: m if m == _PERIODO_TODO else metricas.rotulo_mes(*m),
+    )
+    # A MP é lida da base inteira, não do recorte: uma MP que só aparece em agosto
+    # precisa continuar escolhível enquanto o filtro está em julho, senão a opção
+    # some da lista no exato momento em que o operador iria usá-la.
+    mps = col_mp.multiselect("Matéria-prima (MP)",
+                             sorted(df["mp"].dropna().unique()), key="mp_previsao")
+
+    if escolha == _PERIODO_TODO:
+        # Chave própria (e não a do seletor real) para o Streamlit não tentar casar
+        # o valor guardado com uma lista de opções que mudou de natureza — mesma
+        # precaução do filtro de fluxo por MP.
+        col_sem.selectbox("Semana", [_PERIODO_TODO], key="sem_previsao_off",
+                          disabled=True)
+        # Sem mês escolhido, a grade semanal cobre todos os meses da base, em ordem
+        # cronológica — mas só as semanas que de fato tocam o período com previsão.
+        # Um mês entra em `meses` por causa de um único dia de recebimento, e sem
+        # este recorte metade das barras nasceria zerada só porque o mês tem cinco
+        # semanas: o gráfico ficaria dizendo "não temos nada a receber" em faixas
+        # que simplesmente estão fora da janela da planilha.
+        #
+        # No recorte por mês a regra é a oposta e igualmente deliberada: ali a grade
+        # é o mês inteiro, porque a leitura é a comparação entre as semanas dele.
+        datas = df["data"].dropna()
+        primeira, ultima = datas.min().date(), datas.max().date()
+        todas = [s for ano, mes in sorted(meses)
+                 for s in metricas.semanas_do_mes(ano, mes)
+                 if s.inicio <= ultima and s.fim >= primeira]
+        return None, None, mps, todas, _PERIODO_TODO
+
+    ano, mes = escolha
+    semanas = metricas.semanas_do_mes(ano, mes)
+    opcoes = ["Mês inteiro"] + [s.rotulo for s in semanas]
+    sem = col_sem.selectbox("Semana", opcoes, key="sem_previsao")
+    if sem == "Mês inteiro":
+        inicio, fim = metas.limites_do_mes(ano, mes)
+        return inicio, fim, mps, semanas, metricas.rotulo_mes(ano, mes)
+    semana = semanas[opcoes.index(sem) - 1]
+    return semana.inicio, semana.fim, mps, semanas, semana.rotulo
+
+
+def _cards_previsao(r: metricas.ResumoPrevisao, rotulo: str) -> None:
+    ui.grade_cards([
+        {"label": "Total de ordens", "valor": ui.fmt_int(r.ordens),
+         "sub": f"{ui.fmt_int(r.oficinas)} oficina(s) · {rotulo}",
+         "accent": ui.ACENTOS["teal"]},
+        {"label": "Total de peças", "valor": ui.fmt_int(r.pecas),
+         "sub": f"previstas para receber · {rotulo}", "accent": ui.ACENTOS["emerald"]},
+        {"label": "Total de minutos", "valor": ui.fmt_int(r.minutos),
+         "sub": f"previstos para receber · {rotulo}", "accent": ui.ACENTOS["sky"]},
+    ])
+
+
+def _cards_risco_previsao(r: metricas.ResumoPrevisao) -> None:
+    """As duas leituras de risco, em cards separados — ver config.STATUS_PREV_*.
+
+    Uma ordem pode estar nas duas ao mesmo tempo (prazo já vencido *e* previsão
+    posterior ao prazo), então os dois números não se somam: cada card responde uma
+    pergunta diferente, e juntá-los daria um total maior que a quantidade de ordens.
+    """
+    ui.grade_cards([
+        {"label": config.STATUS_PREV_FURA_PRAZO, "valor": ui.fmt_int(r.fura_prazo),
+         "sub": f"{ui.fmt_int(r.pecas_fura_prazo)} peça(s) — recebimento previsto "
+                f"depois do deadline", "accent": ui.ACENTOS["amber"]},
+        {"label": config.STATUS_PREV_VENCIDA, "valor": ui.fmt_int(r.vencidas),
+         "sub": f"{ui.fmt_int(r.pecas_vencidas)} peça(s) — deadline já passou e a "
+                f"ordem não voltou", "accent": ui.ACENTOS["rose"]},
+    ])
+
+
+_COLUNAS_CONSOL_MP = {"mp": "MP", "qtd_pecas": "Qtd", "minutos": "Minutos",
+                      "ordens": "Total de ordens"}
+
+
+def _tabela_consolidado_mp(df) -> None:
+    """O consolidado por MP em números, ao lado do gráfico que mostra a forma."""
+    consolidado = metricas.consolidado_por_mp(df)
+    visao = pd.DataFrame({
+        "mp": consolidado["mp"],
+        "qtd_pecas": consolidado["qtd_pecas"].map(ui.fmt_int),
+        "minutos": consolidado["minutos"].map(ui.fmt_int),
+        "ordens": consolidado["ordens"].map(ui.fmt_int),
+    })
+    ui.tabela_verde(
+        visao, _COLUNAS_CONSOL_MP, col_oficina="mp",
+        col_num=("qtd_pecas", "minutos", "ordens"),
+        vazio="Nenhuma MP prevista no filtro atual.",
+    )
+    # Como no detalhe: a planilha sai do consolidado cru para o Excel poder somar.
+    ui.botao_excel(
+        consolidado, _COLUNAS_CONSOL_MP, "previsao_mp",
+        titulo="Previsão consolidada por MP",
+        rotulo="Baixar consolidado por MP em Excel",
+        subtitulo="Peças, minutos e ordens previstas por matéria-prima",
+        somar=("qtd_pecas", "minutos", "ordens"),
+    )
+
+
+def _tabela_previsao(df) -> None:
+    """Detalhe da previsão, do recebimento mais próximo para o mais distante."""
+    detalhe = df.sort_values(["data", "deadline"], na_position="last")
+    visao = pd.DataFrame({
+        "om": detalhe["om"].map(lambda v: "—" if pd.isna(v) else f"{int(v)}"),
+        "oficina": detalhe["oficina"],
+        "envio": detalhe["envio"].map(ui.fmt_data),
+        "deadline": detalhe["deadline"].map(ui.fmt_data),
+        "qtd_pecas": detalhe["qtd_pecas"].map(ui.fmt_int),
+        "minutos": detalhe["minutos"].map(ui.fmt_int),
+        "data": detalhe["data"].map(ui.fmt_data),
+        "mp": detalhe["mp"],
+    })
+    ui.tabela_paginada(
+        visao, _COLUNAS_PREVISAO, "previsao", col_oficina="oficina",
+        col_num=("om", "qtd_pecas", "minutos"),
+        vazio="Nenhuma ordem prevista no filtro atual.",
+    )
+    # A planilha sai do `detalhe` cru, não do `visao`: no Excel os números e as
+    # datas precisam continuar números e datas para somar, ordenar e filtrar.
+    ui.botao_excel(
+        detalhe, _COLUNAS_PREVISAO, "previsao", titulo="Previsão de recebimento",
+        rotulo="Baixar previsão em Excel",
+        subtitulo="Ordens previstas — recebimento mais próximo primeiro",
+        somar=("qtd_pecas", "minutos"),
+    )
+
+
+def _aba_previsao() -> None:
+    try:
+        df = _fato("previsao", _versao_dados())
+    except GestaoFluxoError as exc:
+        st.error(exc.mensagem_usuario)
+        return
+    if df.empty:
+        st.warning("A tabela de Previsão está vazia. Suba a planilha PREVISAO.xlsx "
+                   "em **Dados**, no canto superior direito.")
+        return
+
+    filtros = _filtros_previsao(df)
+    if filtros is None:
+        st.warning("Nenhuma data de recebimento válida nesta base — não há período "
+                   "para filtrar.")
+        return
+    inicio, fim, mps, semanas, rotulo = filtros
+
+    # Um único recorte alimenta cards, gráficos e tabela: é o que garante que os
+    # três nunca divirjam entre si por construção, e não por disciplina.
+    atual = metricas.classificar_previsao(metricas.filtrar(df, inicio, fim, mps))
+    r = metricas.resumo_previsao(atual)
+
+    ui.titulo_secao(f"Visão geral — {rotulo}")
+    _cards_previsao(r, rotulo)
+
+    ui.titulo_secao("Risco de prazo")
+    _cards_risco_previsao(r)
+    if r.sem_prazo:
+        st.caption(
+            f"{ui.fmt_int(r.sem_prazo)} ordem(ns) sem deadline cadastrado não entram "
+            "em nenhum dos dois riscos — a ausência do dado é problema de cadastro, "
+            "e contá-la como atraso inventaria um número que não dá para conferir "
+            "na planilha."
+        )
+
+    ui.titulo_secao("Distribuição por matéria-prima (MP)")
+    charts.renderizar(charts.barras_por_mp(metricas.por_mp(atual)), altura=340)
+
+    ui.titulo_secao(f"Consolidado por matéria-prima (MP) — {rotulo}")
+    _tabela_consolidado_mp(atual)
+
+    ui.titulo_secao("Distribuição por semana")
+    # A visão semanal cobre a grade inteira de propósito (o mês todo, ou todos os
+    # meses em "Todo o período"): é a comparação *entre* semanas, mesmo quando o
+    # recorte atual é uma semana só. Mesma decisão das abas de análise.
+    grade = metricas.filtrar(df, semanas[0].inicio, semanas[-1].fim, mps)
+    charts.renderizar(
+        charts.barras_por_semana(metricas.por_semana(grade, semanas)), altura=340)
+
+    ui.titulo_secao("Distribuição por dia")
+    charts.renderizar(charts.barras_por_dia(metricas.por_dia(atual)), altura=340)
+
+    ui.titulo_secao(f"Ordens previstas — {rotulo}")
+    _tabela_previsao(atual)
+
+
+# --------------------------------------------------------------------------- #
 # ABA DE METAS
 # --------------------------------------------------------------------------- #
 def _formulario_metas(salvas: dict) -> None:
@@ -819,8 +1078,26 @@ def _aba_metas() -> None:
 # MAIN
 # --------------------------------------------------------------------------- #
 def _banco_pronto() -> bool:
-    return all(database.tabela_existe(_engine(), spec["tabela"])
-               for spec in config.FONTES.values())
+    """Há banco carregado o bastante para montar o painel?
+
+    Faltar *todas* as tabelas é banco novo: a tela de carga inicial é a resposta
+    certa. Faltar só algumas é outra história — acontece quando uma fonte nova
+    entra no `config` e o banco em uso ainda não conhece a tabela dela. Aí criar o
+    schema (idempotente) resolve, e é bem melhor que mandar o operador rodar uma
+    carga completa, que exigiria ter em mãos *todas* as planilhas só para voltar a
+    abrir o painel. A tabela nova nasce vazia e a própria aba orienta a subir a
+    planilha correspondente.
+    """
+    engine = _engine()
+    faltando = [spec["tabela"] for spec in config.FONTES.values()
+                if not database.tabela_existe(engine, spec["tabela"])]
+    if not faltando:
+        return True
+    if len(faltando) == len(config.FONTES):
+        return False
+    _LOG.info("Criando tabela(s) ausente(s) no banco: %s", ", ".join(faltando))
+    database.init_schema(engine)
+    return True
 
 
 def _carga_inicial() -> None:
@@ -874,6 +1151,7 @@ def main() -> None:
     # a sidebar antiga já seguia: nada de navegação numa tela sem dado nenhum).
     renderizadores = {
         "Acompanhamento": _aba_acompanhamento,
+        "Previsão": _aba_previsao,
         "Recebimento": lambda: _aba_analise("recebimento"),
         "Envios": lambda: _aba_analise("envios"),
         "Metas": _aba_metas,
