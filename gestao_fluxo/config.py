@@ -73,6 +73,7 @@ def url_do_banco() -> str:
 EXCEL_ENVIOS: Path = PROJECT_ROOT / "ENVIOS_OFICINAS.xlsx"
 EXCEL_RECEBIMENTO: Path = PROJECT_ROOT / "RECEBIMENTO.xlsx"
 EXCEL_ACOMPANHAMENTO: Path = PROJECT_ROOT / "ACOMPANHAMENTO.xlsx"
+EXCEL_PREVISAO: Path = PROJECT_ROOT / "PREVISAO.xlsx"
 EXCEL_DE_PARA: Path = PROJECT_ROOT / "de_para_oficinas.xlsx"
 
 # --------------------------------------------------------------------------- #
@@ -132,6 +133,25 @@ FONTES: dict = {
             "qtd_pecas": "QTD", "minutos": "MINUTOS", "mp": "MP",
         },
     },
+    # Previsão é a agenda do que ainda vai voltar das oficinas. O campo "data"
+    # aponta para RECEBIMENTO — e não para ENVIO, como nas outras — porque aqui o
+    # evento que interessa é a **data prevista de retorno**: é ela que responde
+    # "o que temos para receber nesta semana". ENVIO e DEAD LINE vêm junto como
+    # campos extras, para medir prazo sem precisar cruzar com outra base.
+    #
+    # Substituição, pelo mesmo motivo do Acompanhamento: é um retrato do que está
+    # previsto *agora*. A ordem some da planilha quando volta, e acumular deixaria
+    # ordens já recebidas para sempre na previsão.
+    "previsao": {
+        "tabela": "fato_previsao",
+        "rotulo": "Previsão",
+        "modo": MODO_SUBSTITUICAO,
+        "colunas": {
+            "om": "ORDEM MESTRE", "oficina": "OFICINA", "data": "RECEBIMENTO",
+            "qtd_pecas": "QTD", "minutos": "MINUTOS", "mp": "MP",
+            "deadline": "DEAD LINE", "envio": "ENVIO",
+        },
+    },
 }
 
 
@@ -141,14 +161,22 @@ def arquivo_da_fonte(fonte: str) -> Path:
         "acompanhamento": EXCEL_ACOMPANHAMENTO,
         "recebimento": EXCEL_RECEBIMENTO,
         "envios": EXCEL_ENVIOS,
+        "previsao": EXCEL_PREVISAO,
     }[fonte]
 
 
 CAMPOS_FATO = ["oficina", "data", "mp", "qtd_pecas", "minutos", "om"]
 
-# Campos além do núcleo comum. Só o Acompanhamento carrega prazo, porque é a única
-# base que representa saldo em aberto — nas outras a linha já é um fato consumado.
-CAMPOS_EXTRA: dict = {"acompanhamento": ["deadline"]}
+# Campos além do núcleo comum. Só Acompanhamento e Previsão os carregam, porque são
+# as duas bases que representam ordem ainda em aberto — nas outras a linha já é um
+# fato consumado, e prazo de algo que já aconteceu não tem o que acompanhar.
+#
+# TODO campo extra é data em ISO: `etl.extrair_fonte` os converte em bloco por essa
+# regra. Um extra numérico ou de texto precisaria de tratamento próprio lá.
+CAMPOS_EXTRA: dict = {
+    "acompanhamento": ["deadline"],
+    "previsao": ["deadline", "envio"],
+}
 
 
 def campos_da_fonte(fonte: str) -> list:
@@ -176,6 +204,21 @@ STATUS_SEM_PRAZO: str = "Sem prazo"
 STATUS_PRAZO: tuple = (
     STATUS_ATRASADO, STATUS_VENCE_BREVE, STATUS_NO_PRAZO, STATUS_SEM_PRAZO,
 )
+
+# --------------------------------------------------------------------------- #
+# Previsão — o que está agendado para voltar das oficinas
+# --------------------------------------------------------------------------- #
+# Duas leituras de risco, deliberadamente medidas em cards separados: a mesma ordem
+# pode cair nas duas ao mesmo tempo, e um card único somando-as esconderia qual das
+# duas está acontecendo (e o total ficaria maior que a soma real de ordens).
+#
+# FURA_PRAZO -> a data prevista de retorno é POSTERIOR ao prazo. É projeção: a ordem
+#               ainda não estourou, e é justamente por isso que o card existe — dá
+#               tempo de cobrar a oficina antes do fato.
+# VENCIDA    -> o prazo já passou e a ordem continua na previsão, ou seja, não voltou.
+#               É o mesmo critério de STATUS_ATRASADO usado no Acompanhamento.
+STATUS_PREV_FURA_PRAZO: str = "Previsão fura o prazo"
+STATUS_PREV_VENCIDA: str = "Prazo já vencido"
 
 # --------------------------------------------------------------------------- #
 # Metas — 6 chaves (mês / semana / dia) x (peças / minutos)

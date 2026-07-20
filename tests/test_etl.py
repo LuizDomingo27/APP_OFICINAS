@@ -93,7 +93,7 @@ def test_totais_batem_com_a_origem(engine, planilhas, de_para):
 
 def test_relatorio_reflete_o_que_foi_gravado(engine, planilhas, de_para):
     rel = etl.executar_etl(engine, caminhos=planilhas, de_para_path=de_para)
-    assert rel.total_linhas == 2 + 4 + 3
+    assert rel.total_linhas == 2 + 4 + 3 + 3   # acomp + receb + envios + previsão
     envios = next(f for f in rel.fontes if f.rotulo == "Envios")
     assert envios.linhas == 3
     assert envios.total_pecas == pytest.approx(270)

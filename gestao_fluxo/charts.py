@@ -198,8 +198,7 @@ def rosca_por_mp(df: pd.DataFrame, coluna: str, titulo: str) -> dict:
 # só pela tooltip — o gráfico mostra a forma da curva, não a escala.
 _EIXO_Y_OCULTO = [
     {"type": "value", "axisLabel": {"show": False}, "axisTick": {"show": False},
-     "axisLine": {"show": False},
-     "splitLine": {"lineStyle": {"color": LINHA, "type": "dashed"}}},
+     "axisLine": {"show": False}, "splitLine": {"show": False}},
     {"type": "value", "axisLabel": {"show": False}, "axisTick": {"show": False},
      "axisLine": {"show": False}, "splitLine": {"show": False}},
 ]
@@ -269,6 +268,95 @@ def linha_por_semana(df: pd.DataFrame, titulo: str = "Total por semana do mês")
         df["rotulo"].tolist(),
         [round(v) for v in df["qtd_pecas"]],
         [round(v) for v in df["minutos"]],
+    )
+
+
+# =========================================================================== #
+# GRÁFICOS DA ABA DE PREVISÃO
+# =========================================================================== #
+# Barras, e não linha: na previsão cada categoria é um balde independente (uma MP,
+# uma semana, um dia), e a linha sugeriria uma continuidade que não existe entre uma
+# MP e a seguinte. A leitura aqui é de comparação de volume, não de tendência.
+
+
+def _barras_duplas(titulo: str, rotulos: list, pecas: list, minutos: list,
+                   *, rodar_rotulo: bool = False) -> dict:
+    """Peças e minutos lado a lado sobre os mesmos rótulos.
+
+    Cada série tem seu eixo (peças e minutos diferem em ordem de grandeza) e os
+    rótulos do Y ficam ocultos, como no resto do painel: o valor exato vem pela
+    tooltip e o gráfico responde "qual é maior", que é a pergunta real.
+    """
+    eixo_x = {
+        "type": "category", "data": rotulos,
+        "axisTick": {"show": False},
+        "axisLine": {"lineStyle": {"color": LINHA}},
+        "axisLabel": {"fontSize": 11, "color": MUTED, "hideOverlap": True},
+    }
+    if rodar_rotulo:
+        # Rótulo de semana ("Semana 3 (13/07 a 19/07)") e de dia são longos e, em
+        # barra, nascem sob a coluna: sem inclinação o ECharts esconde um a cada
+        # dois para não sobrepor, e o eixo passa a mentir sobre o que está ali.
+        eixo_x["axisLabel"] = {**eixo_x["axisLabel"], "rotate": 38,
+                               "hideOverlap": False}
+    return {
+        **_BASE,
+        "grid": {"left": 8, "right": 20, "top": 60,
+                 "bottom": 24 if rodar_rotulo else 8, "containLabel": True},
+        "title": {"text": titulo, "left": "left", "top": 2, "textStyle": _TITULO},
+        "tooltip": {**_TOOLTIP, "trigger": "axis",
+                    "axisPointer": {"type": "shadow"}, "formatter": _TOOLTIP_EIXO},
+        "legend": {**_BASE["legend"], "data": ["Peças", "Minutos"]},
+        "xAxis": eixo_x,
+        "yAxis": _EIXO_Y_OCULTO,
+        "series": [
+            {"name": "Peças", "type": "bar", "yAxisIndex": 0, "barMaxWidth": 42,
+             "itemStyle": {"color": VERDE, "borderRadius": [6, 6, 0, 0]},
+             "emphasis": {"focus": "series"}, "data": pecas},
+            {"name": "Minutos", "type": "bar", "yAxisIndex": 1, "barMaxWidth": 42,
+             "itemStyle": {"color": AMBAR, "borderRadius": [6, 6, 0, 0]},
+             "emphasis": {"focus": "series"}, "data": minutos},
+        ],
+    }
+
+
+def barras_por_mp(df: pd.DataFrame,
+                  titulo: str = "Distribuição por matéria-prima (MP)") -> dict:
+    """Volume previsto por MP. Recebe a saída de `metricas.por_mp`."""
+    if df.empty:
+        return _sem_dados(titulo)
+    return _barras_duplas(
+        titulo,
+        df["mp"].astype(str).tolist(),
+        [round(v) for v in df["qtd_pecas"]],
+        [round(v) for v in df["minutos"]],
+    )
+
+
+def barras_por_semana(df: pd.DataFrame,
+                      titulo: str = "Distribuição por semana") -> dict:
+    """Volume previsto por semana do mês. Recebe a saída de `metricas.por_semana`."""
+    if df.empty:
+        return _sem_dados(titulo)
+    return _barras_duplas(
+        titulo,
+        df["rotulo"].astype(str).tolist(),
+        [round(v) for v in df["qtd_pecas"]],
+        [round(v) for v in df["minutos"]],
+        rodar_rotulo=True,
+    )
+
+
+def barras_por_dia(df: pd.DataFrame, titulo: str = "Distribuição por dia") -> dict:
+    """Volume previsto por dia. Recebe a saída de `metricas.por_dia`."""
+    if df.empty:
+        return _sem_dados(titulo)
+    return _barras_duplas(
+        titulo,
+        [d.strftime("%d/%m") for d in df["data"]],
+        [round(v) for v in df["qtd_pecas"]],
+        [round(v) for v in df["minutos"]],
+        rodar_rotulo=True,
     )
 
 
