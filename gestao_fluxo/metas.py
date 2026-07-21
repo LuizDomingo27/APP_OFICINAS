@@ -143,8 +143,15 @@ def montar_plano(df_realizado: pd.DataFrame, metas_salvas: dict, ano: int, mes: 
     hoje = hoje or date.today()
     inicio_mes, fim_mes = limites_do_mes(ano, mes)
     uteis_mes = dias_uteis(inicio_mes, fim_mes)
-    # Mês já encerrado -> tudo decorrido; mês futuro -> nada decorrido.
-    uteis_decorridos = 0 if hoje < inicio_mes else dias_uteis(inicio_mes, min(hoje, fim_mes))
+    # Mês futuro -> nada decorrido; mês encerrado -> tudo decorrido. Dentro do
+    # mês, hoje ainda conta como dia de produção (restante), então só os dias
+    # ANTERIORES a hoje entram em "decorridos".
+    if hoje < inicio_mes:
+        uteis_decorridos = 0
+    elif hoje > fim_mes:
+        uteis_decorridos = uteis_mes
+    else:
+        uteis_decorridos = dias_uteis(inicio_mes, hoje - timedelta(days=1))
     uteis_restantes = max(uteis_mes - uteis_decorridos, 0)
 
     semana = _semana_corrente(ano, mes, hoje)

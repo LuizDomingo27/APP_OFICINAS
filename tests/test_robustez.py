@@ -78,6 +78,21 @@ def test_tabela_existe_responde_sem_levantar(engine):
     assert database.tabela_existe(engine, "fato_envios") is False
 
 
+def test_tabelas_existentes_responde_em_uma_consulta(engine):
+    """O arranque pergunta todas as tabelas de fato de uma vez (ver app._banco_pronto).
+
+    Num banco recém-aberto nada existe: o retorno é conjunto vazio, sem levantar.
+    Depois do schema cada fato aparece — e um nome inventado nunca entra no
+    resultado, mesmo pedido junto com os reais.
+    """
+    pedidas = {"fato_envios", "fato_recebimento", "nao_existe"}
+    assert database.tabelas_existentes(engine, pedidas) == set()
+
+    database.init_schema(engine)
+    assert database.tabelas_existentes(engine, pedidas) == {
+        "fato_envios", "fato_recebimento"}
+
+
 # =========================================================================== #
 # FORMATADORES — chamados milhares de vezes por render
 # =========================================================================== #
