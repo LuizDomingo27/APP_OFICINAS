@@ -1089,15 +1089,35 @@ def _banco_pronto() -> bool:
     planilha correspondente.
     """
     engine = _engine()
-    faltando = [spec["tabela"] for spec in config.FONTES.values()
-                if not database.tabela_existe(engine, spec["tabela"])]
+    tabelas = {spec["tabela"] for spec in config.FONTES.values()}
+    # Uma consulta só em vez de uma por fato — ver database.tabelas_existentes.
+    faltando = tabelas - database.tabelas_existentes(engine, tabelas)
     if not faltando:
         return True
-    if len(faltando) == len(config.FONTES):
+    if faltando == tabelas:              # nenhuma existe -> banco novo
         return False
-    _LOG.info("Criando tabela(s) ausente(s) no banco: %s", ", ".join(faltando))
+    _LOG.info("Criando tabela(s) ausente(s) no banco: %s", ", ".join(sorted(faltando)))
     database.init_schema(engine)
     return True
+
+
+@st.cache_data(show_spinner=False)
+def _schema_pronto(_versao: int) -> bool:
+    """Cache do resultado de `_banco_pronto`, resolvido uma vez por sessão.
+
+    A verificação de schema rodava a cada rerun do Streamlit (todo clique de filtro
+    ou troca de aba), disparando uma consulta de existência por tabela de fato ao
+    banco. O schema, porém, só muda quando o ETL cria/recria tabelas — e
+    `_rodar_etl` já chama `st.cache_data.clear()` ao final, então uma tabela
+    recém-criada é reavaliada na execução seguinte. Entre cargas, o custo de rede
+    dessa checagem cai a zero. `_versao` acompanha a assinatura de `_fato`: marca o
+    vínculo com a versão dos dados; a invalidação de fato vem do `clear()` acima.
+
+    Exceções (`BancoDeDadosError` e afins) NÃO são memorizadas pelo cache do
+    Streamlit: uma falha transitória de rede é retentada no rerun seguinte em vez de
+    ficar presa, e o tratamento continua no `try/except` de `main`.
+    """
+    return _banco_pronto()
 
 
 def _carga_inicial() -> None:
@@ -1130,7 +1150,7 @@ def main() -> None:
     # aqui não há painel para mostrar, então esta checagem tem tratamento próprio
     # em vez de entrar no `_blindar` de uma seção.
     try:
-        pronto = _banco_pronto()
+        pronto = _schema_pronto(_versao_dados())
     except GestaoFluxoError as exc:
         _LOG.error("Verificação do banco: %s", exc.detalhe or exc.mensagem_usuario)
         st.error(exc.mensagem_usuario)

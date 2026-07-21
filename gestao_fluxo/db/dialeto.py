@@ -56,6 +56,15 @@ class Dialeto:
         """Query com parâmetro nomeado `:n` que devolve 0 ou 1 linha."""
         raise NotImplementedError
 
+    def sql_listar_tabelas(self) -> str:
+        """Query sem parâmetros que devolve a coluna `name` com TODAS as tabelas e
+        views do schema atual.
+
+        Existe para perguntar "quais destas tabelas existem?" numa única ida ao
+        banco, em vez de uma consulta por tabela — ver database.tabelas_existentes.
+        """
+        raise NotImplementedError
+
     # --------------------------------------------------------------------- #
     # Operações
     # --------------------------------------------------------------------- #
@@ -112,6 +121,9 @@ class DialetoSQLite(Dialeto):
         return ("SELECT name FROM sqlite_master "
                 "WHERE type IN ('table','view') AND name = :n")
 
+    def sql_listar_tabelas(self) -> str:
+        return "SELECT name FROM sqlite_master WHERE type IN ('table','view')"
+
     def executar_schema(self, engine: Engine, sql: str) -> None:
         raw = engine.raw_connection()
         try:
@@ -164,6 +176,10 @@ class DialetoPostgres(Dialeto):
     def sql_tabela_existe(self) -> str:
         return ("SELECT table_name AS name FROM information_schema.tables "
                 "WHERE table_schema = current_schema() AND table_name = :n")
+
+    def sql_listar_tabelas(self) -> str:
+        return ("SELECT table_name AS name FROM information_schema.tables "
+                "WHERE table_schema = current_schema()")
 
     def executar_schema(self, engine: Engine, sql: str) -> None:
         # psycopg2 aceita várias instruções num único execute, e o `begin()` torna

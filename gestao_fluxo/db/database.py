@@ -282,6 +282,24 @@ def tabela_existe(engine: Engine, nome: str) -> bool:
     return not df.empty
 
 
+def tabelas_existentes(engine: Engine, nomes) -> set:
+    """Quais das tabelas pedidas existem, numa ÚNICA consulta.
+
+    Substitui uma rajada de `tabela_existe` — uma ida ao banco por tabela — por uma
+    só: lista as tabelas do schema atual e cruza com `nomes` em Python. Numa tela
+    Streamlit, que reexecuta o script inteiro a cada clique, o arranque perguntava
+    a existência de cada fato separadamente; sobre um Postgres remoto isso somava
+    vários round-trips por interação. Ver app._banco_pronto / app._schema_pronto.
+
+    Erros do driver já sobem como `BancoDeDadosError` de dentro de `read_sql`. O
+    `"name" in df.columns` protege o caso de um resultado sem linhas: mesmo aí a
+    coluna deve vir, mas a checagem evita KeyError se algum driver a suprimir.
+    """
+    df = read_sql(dialeto.de(engine).sql_listar_tabelas(), engine)
+    presentes = set(df["name"]) if "name" in df.columns else set()
+    return {nome for nome in nomes if nome in presentes}
+
+
 # =========================================================================== #
 # ESCRITA
 # =========================================================================== #

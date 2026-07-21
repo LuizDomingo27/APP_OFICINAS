@@ -117,12 +117,13 @@ def test_sem_meta_semanal_cadastrada_usa_a_diluicao(realizado):
 
 
 def test_ritmo_necessario_usa_os_dias_uteis_restantes(realizado):
-    """Em 15/07 já correram 11 dias úteis; sobram 12 para as 700 peças que faltam."""
+    """Em 15/07 correram 10 dias úteis (hoje ainda conta como produção); sobram
+    13 para as 700 peças que faltam."""
     plano = metas.montar_plano(realizado, {"mes_pecas": 1000}, 2026, 7,
                                hoje=date(2026, 7, 15))
-    assert plano.dias_uteis_decorridos == 11
-    assert plano.dias_uteis_restantes == 12
-    assert plano.ritmo_necessario["pecas"] == pytest.approx(700 / 12)
+    assert plano.dias_uteis_decorridos == 10
+    assert plano.dias_uteis_restantes == 13
+    assert plano.ritmo_necessario["pecas"] == pytest.approx(700 / 13)
 
 
 def test_mes_ja_encerrado_nao_tem_dia_restante(realizado):
