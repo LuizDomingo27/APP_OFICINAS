@@ -190,13 +190,30 @@ class DialetoPostgres(Dialeto):
 
     def inserir_muitas(self, conn: Connection, tabela: str, colunas: list,
                        linhas: list, *, ignorar_conflito: bool) -> int:
-        # `rowcount` do psycopg2 já exclui o que o ON CONFLICT descartou, e é a
-        # única contagem correta sob concorrência: com dois operadores subindo
-        # planilhas ao mesmo tempo, COUNT(*) antes/depois enxergaria as linhas do
-        # outro e reportaria um número inventado.
-        resultado = conn.exec_driver_sql(
-            self.sql_insert(tabela, colunas, ignorar_conflito=ignorar_conflito), linhas)
-        return max(int(resultado.rowcount or 0), 0)
+        # `execute_values` monta UM comando INSERT com várias linhas por página, em
+        # vez do `executemany` do psycopg2 — que faz uma ida ao banco por registro e
+        # deixava a carga lenta sob a latência do Supabase. Para dezenas de milhares
+        # de linhas a diferença é de minutos para segundos.
+        #
+        # A contagem sai do `RETURNING 1` com `fetch=True`: são exatamente as linhas
+        # que ESTE comando gravou, já sem o que o ON CONFLICT descartou — continua
+        # correto sob concorrência (o RETURNING nunca enxerga linhas de outra carga),
+        # e mais confiável que o `rowcount`, que sob paginação só reflete a última.
+        #
+        # Import local para preservar a propriedade de que a suíte roda em SQLite
+        # sem o psycopg2 instalado — este caminho só existe em produção.
+        if not linhas:
+            return 0
+        from psycopg2.extras import execute_values
+
+        conflito = (f" ON CONFLICT ({', '.join(CONFLITO_IDENTIDADE)}) DO NOTHING"
+                    if ignorar_conflito else "")
+        sql = (f"INSERT INTO {tabela} ({', '.join(colunas)}) VALUES %s"
+               f"{conflito} RETURNING 1")
+        raw = conn.connection.dbapi_connection
+        with raw.cursor() as cur:
+            gravadas = execute_values(cur, sql, linhas, page_size=1000, fetch=True)
+        return len(gravadas)
 
     def inserir_retornando_id(self, conn: Connection, tabela: str, colunas: list,
                               valores: tuple) -> int:

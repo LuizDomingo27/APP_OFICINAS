@@ -63,9 +63,17 @@ def _engine():
     return database.get_engine()
 
 
-@st.cache_data(show_spinner=False)
+@st.cache_data(show_spinner=False, ttl=300)
 def _fato(fonte: str, _versao: int):
-    """Fato completo em cache. `_versao` invalida o cache após uma recarga."""
+    """Fato completo em cache. `_versao` invalida o cache após uma recarga.
+
+    O `ttl` é a rede de segurança para o reboot que antes era manual: uma carga
+    feita numa sessão limpa o cache só do processo que a atendeu, e um painel
+    aberto passivamente noutra aba/dispositivo não re-executa o script para
+    perceber a mudança. Com o `ttl`, qualquer sessão relê o banco em no máximo 5
+    minutos por conta própria — e o botão "Atualizar dados agora" (ver
+    `_menu_dados`) força a releitura na hora, sem depender de reiniciar o servidor.
+    """
     return metricas.carregar_fato(_engine(), fonte)
 
 
@@ -201,6 +209,14 @@ def _menu_dados() -> None:
             st.rerun()
         except GestaoFluxoError as exc:
             st.error(exc.mensagem_usuario)
+
+    # Releitura sem gravar nada: quando alguém subiu planilhas noutra sessão (ou
+    # editou o Supabase por fora), este botão descarta o cache e busca o banco de
+    # novo — é o que substitui o "reboot do servidor" que antes era necessário.
+    if st.button("🔄 Atualizar dados agora", use_container_width=True):
+        st.cache_data.clear()
+        st.session_state["versao_dados"] = _versao_dados() + 1
+        st.rerun()
 
     info = st.session_state.get("ultimo_etl")
     if not info:
@@ -1055,23 +1071,32 @@ def _aba_metas() -> None:
     _badges_alcancado(plano, "semana")
 
     ui.titulo_secao("Relógios — quanto falta para bater a meta")
-    colunas = st.columns(4)
     relogios = [
         ("mes_pecas", "Mês — peças"), ("mes_minutos", "Mês — minutos"),
         ("semana_pecas", "Semana — peças"), ("semana_minutos", "Semana — minutos"),
     ]
-    for coluna, (chave, titulo) in zip(colunas, relogios):
-        a = plano.acompanhamentos[chave]
-        detalhe = "meta batida" if a.batida else f"faltam {ui.fmt_int(a.falta)}"
-        with coluna:
-            charts.renderizar(charts.relogio_meta(a.percentual, titulo, detalhe), altura=270)
+    # Grade 2×2 (em vez de 4 numa linha) para cada relógio ficar bem mais largo
+    # e os textos "faltam X" / percentual não se sobreporem aos números da escala.
+    for inicio in range(0, len(relogios), 2):
+        colunas = st.columns(2, gap="large")
+        for coluna, (chave, titulo) in zip(colunas, relogios[inicio:inicio + 2]):
+            a = plano.acompanhamentos[chave]
+            detalhe = "meta batida" if a.batida else f"faltam {ui.fmt_int(a.falta)}"
+            with coluna:
+                charts.renderizar(charts.relogio_meta(a.percentual, titulo, detalhe), altura=340)
 
     if plano.dias_uteis_restantes:
-        st.info(
-            f"Para fechar o mês faltam **{plano.dias_uteis_restantes} dia(s) útil(eis)** — "
-            f"é preciso produzir **{ui.fmt_int(plano.ritmo_necessario['pecas'])} peças** e "
-            f"**{ui.fmt_int(plano.ritmo_necessario['minutos'])} minutos** por dia útil."
+        st.markdown(
+            '<style>.st-key-info_meta [data-testid^="stAlert"]'
+            '{text-align:center;justify-content:center;}</style>',
+            unsafe_allow_html=True,
         )
+        with st.container(key="info_meta"):
+            st.info(
+                f"Para fechar o mês faltam **{plano.dias_uteis_restantes} dia(s) útil(eis)** — "
+                f"é preciso produzir **{ui.fmt_int(plano.ritmo_necessario['pecas'])} peças** e "
+                f"**{ui.fmt_int(plano.ritmo_necessario['minutos'])} minutos** por dia útil."
+            )
 
 
 # --------------------------------------------------------------------------- #
