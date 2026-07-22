@@ -98,3 +98,144 @@ uteis_restantes = max(uteis_mes - uteis_decorridos, 0)
   atualizado (15/07 → 10 decorridos, 13 restantes, ritmo `700/13`).
 - Suíte de metas: **16 passed**. `test_mes_ja_encerrado_nao_tem_dia_restante`
   segue em 0.
+
+---
+
+# Correção: front-end não atualizava sem reboot + insert lento (2026-07-22)
+
+Dois problemas relatados em produção (Streamlit Cloud + Supabase/Postgres):
+
+1. **Ao adicionar novos registros pelo app, o painel não atualizava** — só depois
+   de reiniciar o servidor do Streamlit Cloud.
+2. **A carga (insert) estava muito lenta** na hora de gravar os registros.
+
+## Problema 1 — Front-end não atualizava sem reboot
+
+### Causa
+
+O cache de dados `_fato` não tinha `ttl`, então **nunca expirava sozinho**. A única
+coisa que o limpava era `st.cache_data.clear()` dentro de `_rodar_etl`, que roda só
+na sessão que faz a carga. Um painel aberto passivamente noutra aba/dispositivo (ou
+outra sessão) não re-executa o script e continuava servindo o dado antigo — até o
+reboot, que zera todo o cache do processo.
+
+### Correção 1a — `ttl` no cache (`app.py:66`)
+
+**Antes estava assim:**
+
+```python
+# app.py:66
+@st.cache_data(show_spinner=False)
+def _fato(fonte: str, _versao: int):
+    """Fato completo em cache. `_versao` invalida o cache após uma recarga."""
+    return metricas.carregar_fato(_engine(), fonte)
+```
+
+**Depois ficou assim:**
+
+```python
+# app.py:66
+@st.cache_data(show_spinner=False, ttl=300)
+def _fato(fonte: str, _versao: int):
+    """Fato completo em cache. `_versao` invalida o cache após uma recarga.
+    ... (ttl=300 é a rede de segurança: qualquer sessão relê o banco sozinha em
+    no máximo 5 minutos, sem depender de reiniciar o servidor.)
+    """
+    return metricas.carregar_fato(_engine(), fonte)
+```
+
+### Correção 1b — botão "Atualizar dados agora" (`app.py:216`)
+
+Novo botão no menu **Dados** (`_menu_dados`), logo após "Recarregar da pasta do
+projeto". Descarta o cache e relê o banco **na hora**, sem gravar nada — é o
+substituto direto do "reboot do servidor".
+
+**Antes estava assim** (não existia o botão):
+
+```python
+# app.py:198 (trecho anterior ao acréscimo)
+    if st.button("Recarregar da pasta do projeto", use_container_width=True):
+        try:
+            _rodar_etl()
+            st.rerun()
+        except GestaoFluxoError as exc:
+            st.error(exc.mensagem_usuario)
+```
+
+**Depois ficou assim** (botão acrescentado):
+
+```python
+# app.py:216
+    if st.button("🔄 Atualizar dados agora", use_container_width=True):
+        st.cache_data.clear()
+        st.session_state["versao_dados"] = _versao_dados() + 1
+        st.rerun()
+```
+
+| O quê | Arquivo | Linha |
+| --- | --- | --- |
+| `ttl=300` no cache de dados | `app.py` | 66 |
+| Botão "🔄 Atualizar dados agora" | `app.py` | 216-219 |
+
+## Problema 2 — Insert muito lento
+
+### Causa
+
+O insert do Postgres usava `conn.exec_driver_sql(sql, linhas)`, que no psycopg2 vira
+`executemany` — **uma ida ao banco por linha**. Contra o Supabase remoto (latência de
+rede por round-trip), gravar dezenas de milhares de linhas assim levava minutos.
+
+### Correção — `execute_values` em lote (`gestao_fluxo/db/dialeto.py:191`)
+
+**Antes estava assim:**
+
+```python
+# gestao_fluxo/db/dialeto.py (DialetoPostgres.inserir_muitas)
+def inserir_muitas(self, conn, tabela, colunas, linhas, *, ignorar_conflito):
+    # rowcount do psycopg2 já exclui o que o ON CONFLICT descartou...
+    resultado = conn.exec_driver_sql(
+        self.sql_insert(tabela, colunas, ignorar_conflito=ignorar_conflito), linhas)
+    return max(int(resultado.rowcount or 0), 0)
+```
+
+**Depois ficou assim:**
+
+```python
+# gestao_fluxo/db/dialeto.py:191 (DialetoPostgres.inserir_muitas)
+def inserir_muitas(self, conn, tabela, colunas, linhas, *, ignorar_conflito):
+    # execute_values monta UM INSERT com várias linhas por página, em vez do
+    # executemany (uma ida ao banco por registro). Minutos -> segundos.
+    if not linhas:
+        return 0
+    from psycopg2.extras import execute_values
+
+    conflito = (f" ON CONFLICT ({', '.join(CONFLITO_IDENTIDADE)}) DO NOTHING"
+                if ignorar_conflito else "")
+    sql = (f"INSERT INTO {tabela} ({', '.join(colunas)}) VALUES %s"
+           f"{conflito} RETURNING 1")
+    raw = conn.connection.dbapi_connection
+    with raw.cursor() as cur:
+        gravadas = execute_values(cur, sql, linhas, page_size=1000, fetch=True)
+    return len(gravadas)
+```
+
+Notas da correção:
+
+- A contagem de linhas novas passa a sair do `RETURNING 1` com `fetch=True` (são
+  exatamente as linhas que este comando gravou, já sem o que o `ON CONFLICT`
+  descartou) — continua correta sob concorrência e mais confiável que o `rowcount`,
+  que sob paginação só reflete a última página.
+- `import` local do `psycopg2` para preservar a propriedade de que a suíte de testes
+  roda em SQLite sem o driver instalado — este caminho só existe em produção.
+
+| O quê | Arquivo | Linha |
+| --- | --- | --- |
+| Insert em lote com `execute_values` | `gestao_fluxo/db/dialeto.py` | 191-216 |
+
+## Verificação
+
+- Suíte completa: **142 passed** (caminho SQLite intacto — o insert em lote só roda
+  contra o Postgres real).
+- `app.py` e `dialeto.py` compilam sem erros (`py_compile`).
+- Pendente confirmar na próxima carga real que a velocidade melhorou e que a prévia
+  "X novas / Y já existentes" continua batendo.
