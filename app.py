@@ -1071,19 +1071,16 @@ def _aba_metas() -> None:
     _badges_alcancado(plano, "semana")
 
     ui.titulo_secao("Relógios — quanto falta para bater a meta")
+    colunas = st.columns(4, gap="small")
     relogios = [
         ("mes_pecas", "Mês — peças"), ("mes_minutos", "Mês — minutos"),
         ("semana_pecas", "Semana — peças"), ("semana_minutos", "Semana — minutos"),
     ]
-    # Grade 2×2 (em vez de 4 numa linha) para cada relógio ficar bem mais largo
-    # e os textos "faltam X" / percentual não se sobreporem aos números da escala.
-    for inicio in range(0, len(relogios), 2):
-        colunas = st.columns(2, gap="large")
-        for coluna, (chave, titulo) in zip(colunas, relogios[inicio:inicio + 2]):
-            a = plano.acompanhamentos[chave]
-            detalhe = "meta batida" if a.batida else f"faltam {ui.fmt_int(a.falta)}"
-            with coluna:
-                charts.renderizar(charts.relogio_meta(a.percentual, titulo, detalhe), altura=340)
+    for coluna, (chave, titulo) in zip(colunas, relogios):
+        a = plano.acompanhamentos[chave]
+        detalhe = "meta batida" if a.batida else f"faltam {ui.fmt_int(a.falta)}"
+        with coluna:
+            charts.renderizar(charts.relogio_meta(a.percentual, titulo, detalhe), altura=300)
 
     if plano.dias_uteis_restantes:
         st.markdown(
