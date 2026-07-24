@@ -25,6 +25,7 @@ import calendar
 from dataclasses import dataclass, field
 from datetime import date, timedelta
 
+import numpy as np
 import pandas as pd
 from sqlalchemy.engine import Engine
 
@@ -43,10 +44,11 @@ def carregar_fato(engine: Engine, fonte: str) -> pd.DataFrame:
     tabela = config.FONTES[fonte]["tabela"]
     campos = config.campos_da_fonte(fonte)
     df = database.read_sql(f"SELECT {', '.join(campos)} FROM {tabela}", engine)
-    # `data` e os campos extras (deadline, envio) são todos datas em ISO — ver
-    # config.CAMPOS_EXTRA. Converter em bloco evita que uma fonte nova com data
-    # extra chegue à tela como texto e só falhe na hora de comparar prazos.
-    for coluna in ("data", *config.CAMPOS_EXTRA.get(fonte, ())):
+    # `data` e os extras de data (deadline, envio) chegam em ISO. Converter em
+    # bloco evita que uma fonte nova com data extra chegue à tela como texto e só
+    # falhe na hora de comparar prazos. Extra de texto (o `estagio` do Status)
+    # fica de fora — ver config.CAMPOS_EXTRA_TEXTO.
+    for coluna in ("data", *config.extras_data_da_fonte(fonte)):
         df[coluna] = pd.to_datetime(df[coluna], errors="coerce")
     df["qtd_pecas"] = pd.to_numeric(df["qtd_pecas"], errors="coerce").fillna(0.0)
     df["minutos"] = pd.to_numeric(df["minutos"], errors="coerce").fillna(0.0)
@@ -337,18 +339,64 @@ def por_dia(df: pd.DataFrame) -> pd.DataFrame:
     return agg.sort_values("data").reset_index(drop=True)
 
 
+COLUNAS_POR_SEMANA = ["semana", "rotulo", "qtd_pecas", "minutos"]
+
+
 def por_semana(df: pd.DataFrame, semanas: list) -> pd.DataFrame:
-    """Total por semana do mês, usando exatamente os recortes de `semanas_do_mes`."""
-    linhas = [
+    """Total por semana do mês, usando exatamente os recortes de `semanas_do_mes`.
+
+    Uma passada só sobre o fato, em numpy: `searchsorted` acha a semana de cada
+    linha e `bincount` soma as duas unidades de uma vez. A versão anterior
+    chamava `filtrar` duas vezes por semana (uma por unidade), e `filtrar`
+    termina em `.copy()` — eram ~12 varreduras e 12 cópias do fato inteiro para
+    produzir 6 linhas, em todo rerun de toda aba que mostra a série semanal.
+
+    A classificação é por busca binária, e não por bins contíguos (`pd.cut`),
+    porque a grade pode ter buraco: em "Todo o período" da Previsão as semanas
+    vêm dos meses COM movimento, então julho pode ser seguido de setembro. Com
+    bins contíguos a faixa de agosto seria somada dentro da primeira semana de
+    setembro. Aqui a data cai na última semana que começa antes dela e só conta
+    se também couber no fim dessa semana — quem cai no buraco fica de fora, que
+    é o comportamento que o gráfico sempre teve.
+    """
+    base = pd.DataFrame(
         {
-            "semana": f"S{s.numero}",
-            "rotulo": s.rotulo,
-            "qtd_pecas": float(filtrar(df, s.inicio, s.fim)["qtd_pecas"].sum()),
-            "minutos": float(filtrar(df, s.inicio, s.fim)["minutos"].sum()),
-        }
-        for s in semanas
-    ]
-    return pd.DataFrame(linhas)
+            "semana": [f"S{s.numero}" for s in semanas],
+            "rotulo": [s.rotulo for s in semanas],
+            "qtd_pecas": 0.0,
+            "minutos": 0.0,
+        },
+        columns=COLUNAS_POR_SEMANA,
+    )
+    if not semanas:
+        return base
+
+    d = df.dropna(subset=["data"])
+    if d.empty:
+        return base
+
+    # A busca binária exige as semanas em ordem de início. Elas chegam ordenadas
+    # em todos os usos de hoje, mas `ordem` desfaz a suposição: o resultado volta
+    # na ordem em que o chamador pediu, que é a ordem do eixo X do gráfico.
+    inicios = np.array([s.inicio for s in semanas], dtype="datetime64[ns]")
+    # Fim exclusivo (+1 dia): as semanas são fechadas nas duas pontas no domínio,
+    # então o dia final tem que entrar na própria semana, não na seguinte.
+    fins = np.array([s.fim for s in semanas], dtype="datetime64[ns]") + np.timedelta64(1, "D")
+    ordem = np.argsort(inicios, kind="stable")
+
+    datas = d["data"].to_numpy(dtype="datetime64[ns]")
+    posicao = np.searchsorted(inicios[ordem], datas, side="right") - 1
+    dentro = posicao >= 0
+    dentro[dentro] &= datas[dentro] < fins[ordem][posicao[dentro]]
+    if not dentro.any():
+        return base
+
+    alvo = ordem[posicao[dentro]]
+    n = len(semanas)
+    for coluna in ("qtd_pecas", "minutos"):
+        base[coluna] = np.bincount(
+            alvo, weights=d[coluna].to_numpy(dtype="float64")[dentro], minlength=n)
+    return base
 
 
 # =========================================================================== #
@@ -693,6 +741,84 @@ def consolidado_por_mp(df: pd.DataFrame) -> pd.DataFrame:
     )
     return (agg.sort_values("qtd_pecas", ascending=False)
                .reset_index(drop=True)[COLUNAS_CONSOL_MP])
+
+
+# =========================================================================== #
+# STATUS — EM QUE ESTÁGIO DO FLUXO A ORDEM PAROU
+# =========================================================================== #
+@dataclass
+class CoberturaPrevisao:
+    """Quanto do que está em aberto já tem data prevista de retorno.
+
+    A conta só existe porque a origem parte a carteira em duas planilhas sem
+    interseção: a ordem sai do STATUS no instante em que ganha data prevista e
+    passa a viver na PREVISÃO. Somar as duas é, portanto, reconstruir a carteira
+    inteira — e a fatia de cada lado responde "de tudo que está fora, quanto
+    conseguimos agendar de volta?", que nenhuma das duas telas responde sozinha.
+    """
+
+    com_previsao: int = 0
+    sem_previsao: int = 0
+    pecas_sem_previsao: float = 0.0
+
+    @property
+    def total(self) -> int:
+        """Ordens em aberto na carteira inteira (as duas bases somadas)."""
+        return self.com_previsao + self.sem_previsao
+
+    @property
+    def pct_coberto(self) -> float | None:
+        """% da carteira com data de retorno; None quando não há carteira."""
+        return (self.com_previsao / self.total * 100) if self.total else None
+
+    @property
+    def pct_sem_previsao(self) -> float | None:
+        return (self.sem_previsao / self.total * 100) if self.total else None
+
+
+def cobertura_previsao(status: pd.DataFrame,
+                       previsao: pd.DataFrame) -> CoberturaPrevisao:
+    """Divide a carteira em aberto entre o que tem e o que não tem data de retorno.
+
+    A ordem que aparecer nas DUAS bases é contada uma vez só, do lado de quem tem
+    previsão. Pela regra da origem isso não acontece, mas a regra vive fora do
+    código: se ela mudar (ou falhar numa exportação), a conta erra para o lado
+    conservador — nunca infla o total nem inventa cobertura.
+    """
+    if status.empty and previsao.empty:
+        return CoberturaPrevisao()
+
+    previstas = set(previsao["om"].dropna()) if not previsao.empty else set()
+    # `isin` devolve False para OM ausente, então a linha sem ordem cadastrada cai
+    # em "sem previsão" — que é onde ela deve estar: não há como agendá-la.
+    sem = status[~status["om"].isin(previstas)] if not status.empty else status
+    return CoberturaPrevisao(
+        com_previsao=_contar_ordens(previsao["om"]) if not previsao.empty else 0,
+        sem_previsao=_contar_ordens(sem["om"]) if not sem.empty else 0,
+        pecas_sem_previsao=float(sem["qtd_pecas"].sum()) if not sem.empty else 0.0,
+    )
+
+
+COLUNAS_POR_ESTAGIO = ["estagio", "ordens", "qtd_pecas", "minutos"]
+
+
+def por_estagio(df: pd.DataFrame) -> pd.DataFrame:
+    """Ordens, peças e minutos por estágio, do maior volume para o menor.
+
+    A ordenação é por volume e não por uma lista fixa de estágios: o vocabulário
+    da origem muda (ver config.ESTAGIOS_CANONICOS), e uma ordem cravada no código
+    empurraria um estágio novo para o fim da tela justamente no dia em que ele
+    apareceu. A contagem de ordens usa a mesma regra dos cards (`_contar_ordens`).
+    """
+    if df.empty:
+        return pd.DataFrame(columns=COLUNAS_POR_ESTAGIO)
+    agg = df.groupby("estagio", as_index=False).agg(
+        ordens=("om", _contar_ordens),
+        qtd_pecas=("qtd_pecas", "sum"),
+        minutos=("minutos", "sum"),
+    )
+    return (agg.sort_values("qtd_pecas", ascending=False)
+               .reset_index(drop=True)[COLUNAS_POR_ESTAGIO])
 
 
 def por_oficina_a_receber(df: pd.DataFrame) -> pd.DataFrame:

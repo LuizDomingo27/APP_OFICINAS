@@ -98,10 +98,33 @@ CREATE TABLE IF NOT EXISTS fato_previsao (
     carga_id   INTEGER
 );
 
+-- Status: as mesmas ordens em aberto do Acompanhamento, com o estágio do fluxo em
+-- que cada uma parou. Substituída por inteiro a cada carga, pelo mesmo motivo das
+-- outras duas bases de retrato.
+--
+-- `estagio` vem da coluna RECEBIMENTO da planilha e é TEXTO, não data — é a etapa
+-- ("Coletando datas", "Ordem extraviada"), normalizada em etl.normalizar_estagio.
+CREATE TABLE IF NOT EXISTS fato_status (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    oficina    TEXT    NOT NULL,
+    data       TEXT,                            -- ISO 'YYYY-MM-DD' (coluna ENVIO)
+    mp         TEXT    NOT NULL,
+    qtd_pecas  REAL    NOT NULL DEFAULT 0,
+    minutos    REAL    NOT NULL DEFAULT 0,
+    om         INTEGER,                         -- ORDEM MESTRE
+    deadline   TEXT,                            -- ISO 'YYYY-MM-DD' (coluna DEAD LINE)
+    estagio    TEXT,                            -- coluna RECEBIMENTO
+    situacao   TEXT,                            -- coluna SITUAÇÃO
+    hash_linha TEXT,
+    ocorrencia INTEGER DEFAULT 1,
+    carga_id   INTEGER
+);
+
 CREATE INDEX IF NOT EXISTS ix_acomp_data  ON fato_acompanhamento (data);
 CREATE INDEX IF NOT EXISTS ix_receb_data  ON fato_recebimento (data);
 CREATE INDEX IF NOT EXISTS ix_envios_data ON fato_envios (data);
 CREATE INDEX IF NOT EXISTS ix_prev_data   ON fato_previsao (data);
+CREATE INDEX IF NOT EXISTS ix_status_data ON fato_status (data);
 
 -- A identidade da linha vive num índice único (e não numa constraint inline)
 -- porque o SQLite não permite acrescentar UNIQUE via ALTER TABLE: bancos antigos,
@@ -111,6 +134,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS ux_acomp_linha  ON fato_acompanhamento (hash_l
 CREATE UNIQUE INDEX IF NOT EXISTS ux_receb_linha  ON fato_recebimento (hash_linha, ocorrencia);
 CREATE UNIQUE INDEX IF NOT EXISTS ux_envios_linha ON fato_envios (hash_linha, ocorrencia);
 CREATE UNIQUE INDEX IF NOT EXISTS ux_prev_linha   ON fato_previsao (hash_linha, ocorrencia);
+CREATE UNIQUE INDEX IF NOT EXISTS ux_status_linha ON fato_status (hash_linha, ocorrencia);
 
 -- Metas: chave/valor. Fica FORA dos DROPs acima de propósito — recarregar as
 -- planilhas não pode apagar as metas cadastradas pelo time.
