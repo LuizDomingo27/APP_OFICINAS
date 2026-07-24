@@ -31,6 +31,17 @@ class ETLError(GestaoFluxoError):
     mensagem_usuario = "Falha ao processar e carregar os dados. Nenhuma alteração foi gravada."
 
 
+class UploadError(GestaoFluxoError):
+    """Falha ao guardar em disco uma planilha enviada pela tela."""
+
+    # O upload precisa sobreviver ao rerun entre "Analisar" e "Confirmar", então
+    # o arquivo é gravado numa pasta temporária. Disco cheio ou pasta sem
+    # permissão travam esse passo antes de qualquer leitura — é falha de
+    # ambiente, não da planilha, e a mensagem tem que dizer isso.
+    mensagem_usuario = ("Não foi possível guardar a planilha enviada. "
+                        "Verifique o espaço em disco e tente de novo.")
+
+
 class BancoDeDadosError(GestaoFluxoError):
     """Falha de acesso ao banco de dados."""
 

@@ -78,6 +78,19 @@ def normalizar_oficina(valor, canonicos: dict | None = None) -> str:
     return disp
 
 
+def normalizar_estagio(valor) -> str:
+    """'Agua. Reposição'/'agua. reposicao' -> Aguardando reposição; vazio -> Sem estágio.
+
+    O estágio fora do vocabulário conhecido volta como veio (limpo), e não num
+    balde genérico: um estágio novo criado na origem precisa aparecer na tela para
+    ser percebido — ver config.ESTAGIOS_CANONICOS.
+    """
+    texto = limpar_texto(valor)
+    if not texto:
+        return config.ESTAGIO_SEM_INFO
+    return config.ESTAGIOS_CANONICOS.get(_sem_acento(texto.upper()), texto)
+
+
 def datas_para_iso(series: pd.Series) -> pd.Series:
     """Converte para strings ISO 'YYYY-MM-DD'; datas inválidas viram None."""
     dt = pd.to_datetime(series, errors="coerce")
@@ -149,6 +162,11 @@ def _localizar_coluna(df: pd.DataFrame, alvo: str) -> str | None:
     return None
 
 
+#: Normalização de cada extra de texto. Quem não está aqui só passa por
+#: `limpar_texto` — é o caso de `situacao`, que a origem já entrega padronizada.
+_NORMALIZAR_EXTRA = {"estagio": normalizar_estagio}
+
+
 def extrair_fonte(fonte: str, caminho: Path | None = None,
                   canonicos: dict | None = None) -> pd.DataFrame:
     """Lê uma planilha e devolve o DataFrame já no formato da tabela de fato."""
@@ -182,9 +200,15 @@ def extrair_fonte(fonte: str, caminho: Path | None = None,
     # `om` como object para o SQLite receber None no lugar de pd.NA.
     out["om"] = out["om"].astype("object").where(out["om"].notna(), None)
 
-    # Campos extras da fonte (deadline, envio) — todos datas, ver config.CAMPOS_EXTRA.
+    # Campos extras da fonte. A regra padrão é "extra é data em ISO" (deadline,
+    # envio) e a conversão vai em bloco; os de texto (config.CAMPOS_EXTRA_TEXTO)
+    # saem antes, cada um com a normalização própria.
     corrigidos = 0
     for campo in config.CAMPOS_EXTRA.get(fonte, ()):
+        if campo in config.CAMPOS_EXTRA_TEXTO:
+            out[campo] = df[achadas[campo]].map(
+                _NORMALIZAR_EXTRA.get(campo, limpar_texto))
+            continue
         valores = pd.to_datetime(df[achadas[campo]], errors="coerce")
         if campo == "deadline":
             prazos = corrigir_ano_deadline(valores)

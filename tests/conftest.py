@@ -63,9 +63,27 @@ def planilhas(tmp_path) -> dict:
         "RECEBIMENTO": ["2026-07-20", "2026-07-25", "2026-08-03"],
     })
 
+    # Status: as mesmas ordens em aberto, com o estágio do fluxo em que pararam.
+    # As quatro linhas cobrem o que a normalização precisa distinguir — grafia suja
+    # do vocabulário conhecido, estágio fora do mapa e estágio em branco.
+    status = pd.DataFrame({
+        "ORDEM MESTRE": [1, 2, 3, 4],
+        "OFICINA": ["Oficina A", "Oficina B", "Oficina B", "Oficina A"],
+        "ENVIO": ["2026-07-06", "2026-07-06", "2026-07-08", "2026-07-09"],
+        "QTD": [100, 200, 50, 40],
+        "MINUTOS": [1000.0, 2000.0, 500.0, 400.0],
+        "DEAD LINE": ["2026-08-01", "2026-07-10", None, "2026-08-05"],
+        "SITUAÇÃO": ["Costura", "Costura", "Costura", "Costura"],
+        "MP": ["JEANS", "Malha", "TEAR", "JEANS"],
+        # 1ª e 2ª entram no mapa apesar da grafia; a 3ª é estágio novo (preservado
+        # como veio); a 4ª chega em branco.
+        "RECEBIMENTO": ["Coletando datas", "agua. reposicao", "Aguarda tecido", None],
+    })
+
     caminhos = {}
     for fonte, df in (("acompanhamento", acomp), ("recebimento", receb),
-                      ("envios", envios), ("previsao", previsao)):
+                      ("envios", envios), ("previsao", previsao),
+                      ("status", status)):
         destino = tmp_path / f"{fonte}.xlsx"
         df.to_excel(destino, index=False)
         caminhos[fonte] = destino

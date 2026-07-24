@@ -74,6 +74,7 @@ EXCEL_ENVIOS: Path = PROJECT_ROOT / "ENVIOS_OFICINAS.xlsx"
 EXCEL_RECEBIMENTO: Path = PROJECT_ROOT / "RECEBIMENTO.xlsx"
 EXCEL_ACOMPANHAMENTO: Path = PROJECT_ROOT / "ACOMPANHAMENTO.xlsx"
 EXCEL_PREVISAO: Path = PROJECT_ROOT / "PREVISAO.xlsx"
+EXCEL_STATUS: Path = PROJECT_ROOT / "STATUS.xlsx"
 EXCEL_DE_PARA: Path = PROJECT_ROOT / "de_para_oficinas.xlsx"
 
 # --------------------------------------------------------------------------- #
@@ -152,6 +153,25 @@ FONTES: dict = {
             "deadline": "DEAD LINE", "envio": "ENVIO",
         },
     },
+    # Status são as ordens em aberto que ainda NÃO têm data prevista de retorno: a
+    # origem exclui da planilha toda ordem que já entrou na Previsão (confirmado
+    # pelo time). Acompanhamento = Previsão + Status, sem interseção. O campo que
+    # sustenta a tela é `estagio` (coluna RECEBIMENTO da planilha) — ver
+    # ESTAGIOS_CANONICOS logo abaixo para o porquê do nome.
+    #
+    # Substituição, pelo mesmo motivo do Acompanhamento e da Previsão: é o retrato
+    # do agora, e a linha some da origem quando a ordem é recebida.
+    "status": {
+        "tabela": "fato_status",
+        "rotulo": "Status",
+        "modo": MODO_SUBSTITUICAO,
+        "colunas": {
+            "om": "ORDEM MESTRE", "oficina": "OFICINA", "data": "ENVIO",
+            "qtd_pecas": "QTD", "minutos": "MINUTOS", "mp": "MP",
+            "deadline": "DEAD LINE", "estagio": "RECEBIMENTO",
+            "situacao": "SITUAÇÃO",
+        },
+    },
 }
 
 
@@ -162,26 +182,37 @@ def arquivo_da_fonte(fonte: str) -> Path:
         "recebimento": EXCEL_RECEBIMENTO,
         "envios": EXCEL_ENVIOS,
         "previsao": EXCEL_PREVISAO,
+        "status": EXCEL_STATUS,
     }[fonte]
 
 
 CAMPOS_FATO = ["oficina", "data", "mp", "qtd_pecas", "minutos", "om"]
 
-# Campos além do núcleo comum. Só Acompanhamento e Previsão os carregam, porque são
-# as duas bases que representam ordem ainda em aberto — nas outras a linha já é um
-# fato consumado, e prazo de algo que já aconteceu não tem o que acompanhar.
-#
-# TODO campo extra é data em ISO: `etl.extrair_fonte` os converte em bloco por essa
-# regra. Um extra numérico ou de texto precisaria de tratamento próprio lá.
+# Campos além do núcleo comum. Só as bases que representam ordem ainda em aberto os
+# carregam — nas outras a linha já é um fato consumado, e prazo de algo que já
+# aconteceu não tem o que acompanhar.
 CAMPOS_EXTRA: dict = {
     "acompanhamento": ["deadline"],
     "previsao": ["deadline", "envio"],
+    "status": ["deadline", "estagio", "situacao"],
 }
+
+#: Extras que são TEXTO, e não data em ISO. A regra padrão de um extra é ser data:
+#: `etl.extrair_fonte` e `metricas.carregar_fato` convertem os extras em bloco por
+#: ela. Quem está listado aqui fica de fora das duas conversões e recebe
+#: normalização própria no ETL (ver etl.normalizar_estagio).
+CAMPOS_EXTRA_TEXTO: frozenset = frozenset({"estagio", "situacao"})
 
 
 def campos_da_fonte(fonte: str) -> list:
     """Colunas da tabela de fato daquela fonte, na ordem de gravação."""
     return CAMPOS_FATO + CAMPOS_EXTRA.get(fonte, [])
+
+
+def extras_data_da_fonte(fonte: str) -> list:
+    """Extras da fonte que são data em ISO — os que gravação e leitura convertem."""
+    return [campo for campo in CAMPOS_EXTRA.get(fonte, ())
+            if campo not in CAMPOS_EXTRA_TEXTO]
 
 
 def modo_da_fonte(fonte: str) -> str:
@@ -217,8 +248,36 @@ STATUS_PRAZO: tuple = (
 #               tempo de cobrar a oficina antes do fato.
 # VENCIDA    -> o prazo já passou e a ordem continua na previsão, ou seja, não voltou.
 #               É o mesmo critério de STATUS_ATRASADO usado no Acompanhamento.
-STATUS_PREV_FURA_PRAZO: str = "Previsão fura o prazo"
+STATUS_PREV_FURA_PRAZO: str = "Previsão fora do prazo"
 STATUS_PREV_VENCIDA: str = "Prazo já vencido"
+
+# --------------------------------------------------------------------------- #
+# Status — em que estágio do fluxo a ordem em aberto está parada
+# --------------------------------------------------------------------------- #
+# A coluna RECEBIMENTO da planilha de STATUS não é uma data: ela diz em que etapa
+# a ordem está ("Coletando datas", "Ordem extraviada"...). Por isso o campo se
+# chama `estagio` e não `recebimento` — já existe uma fonte com esse nome (o fato
+# de recebimento de verdade), e reusar a palavra garantiria confusão permanente.
+#
+# O estágio é digitado à mão na origem e chega com vocabulário sujo: 'devolução'
+# em minúsculas ao lado de 'Ordem extraviada', e 'Agua.' como abreviação de
+# "Aguardando". O mapa casa por chave sem acento e em caixa alta (ver
+# etl.normalizar_estagio).
+#
+# Estágio fora do mapa é preservado como veio, pela mesma razão de
+# `normalizar_oficina`: renomeá-lo à força, ou jogá-lo num balde "Outro",
+# esconderia justamente o estágio novo que a origem acabou de criar.
+ESTAGIO_SEM_INFO: str = "Sem estágio"
+
+ESTAGIOS_CANONICOS: dict = {
+    "COLETANDO DATAS": "Coletando datas",
+    "AGUA. REPOSICAO": "Aguardando reposição",
+    "AGUA. CHAMADO": "Aguardando chamado",
+    "ORDEM EXTRAVIADA": "Ordem extraviada",
+    "MONTA ENVIO": "Monta envio",
+    "REMANEJAR": "Remanejar",
+    "DEVOLUCAO": "Devolução",
+}
 
 # --------------------------------------------------------------------------- #
 # Metas — 6 chaves (mês / semana / dia) x (peças / minutos)

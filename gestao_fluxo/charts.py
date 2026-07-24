@@ -347,6 +347,25 @@ def barras_por_semana(df: pd.DataFrame,
     )
 
 
+def barras_por_estagio(df: pd.DataFrame,
+                       titulo: str = "Peças e minutos por estágio") -> dict:
+    """Volume parado em cada estágio. Recebe a saída de `metricas.por_estagio`.
+
+    Rótulo inclinado: os estágios são frases ("Aguardando reposição"), e sem a
+    inclinação o ECharts esconde um a cada dois para não sobrepor — o eixo passaria
+    a omitir justamente o estágio que o operador procura.
+    """
+    if df.empty:
+        return _sem_dados(titulo)
+    return _barras_duplas(
+        titulo,
+        df["estagio"].astype(str).tolist(),
+        [round(v) for v in df["qtd_pecas"]],
+        [round(v) for v in df["minutos"]],
+        rodar_rotulo=True,
+    )
+
+
 def barras_por_dia(df: pd.DataFrame, titulo: str = "Distribuição por dia") -> dict:
     """Volume previsto por dia. Recebe a saída de `metricas.por_dia`."""
     if df.empty:

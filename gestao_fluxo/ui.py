@@ -668,6 +668,41 @@ def fmt_data(iso) -> str:
         return str(iso)
 
 
+def fmt_om(valor) -> str:
+    """Ordem mestre: número inteiro sem separador, travessão quando ausente.
+
+    Vive aqui e não como lambda solta em cada tabela porque a mesma regra
+    aparecia em quatro telas — e onde ela era reescrita à mão já havia uma
+    variação silenciosa entre elas.
+    """
+    try:
+        if valor is None or pd.isna(valor):
+            return "—"
+        return str(int(valor))
+    except (TypeError, ValueError, OverflowError):
+        return "—"
+
+
+def fmt_pct(valor) -> str:
+    """0.0-100.0 -> '12,3%'. Travessão quando não há base para o percentual."""
+    try:
+        if valor is None or pd.isna(valor):
+            return "—"
+        return f"{float(valor):.1f}%".replace(".", ",")
+    except (TypeError, ValueError):
+        return "—"
+
+
+def fmt_dec(valor) -> str:
+    """1234.5 -> '1.234,50' (duas casas, padrão pt-BR)."""
+    try:
+        if valor is None or pd.isna(valor):
+            return "—"
+        return f"{float(valor):,.2f}".replace(",", "@").replace(".", ",").replace("@", ".")
+    except (TypeError, ValueError):
+        return "—"
+
+
 def delta_html(variacao: float | None, rotulo: str = "vs. período anterior") -> str:
     """Seta + percentual de variação, pronto para entrar no `sub` de um card."""
     if variacao is None:
@@ -713,31 +748,60 @@ def pill(texto: str) -> str:
     return f'<span class="pill {classe}">{html.escape(texto)}</span>'
 
 
-def tabela_verde(df: pd.DataFrame, colunas: dict, *, col_oficina: str | None = None,
+def _celula(valor, formatador) -> str:
+    """Texto de uma célula, com o formatador da coluna quando houver.
+
+    Sem formatador o comportamento é o antigo: ausente vira string vazia. Os
+    formatadores (`fmt_int`, `fmt_data`, `fmt_om`) já tratam ausente por conta
+    própria — devolvem travessão, que diz mais que um espaço em branco.
+    """
+    if formatador is not None:
+        return formatador(valor)
+    try:
+        return "" if pd.isna(valor) else str(valor)
+    except (TypeError, ValueError):
+        return str(valor)
+
+
+def tabela_verde(df: pd.DataFrame, colunas: dict, *, formato: dict | None = None,
+                 col_oficina: str | None = None,
                  col_num: tuple = (), col_html: tuple = (),
                  vazio: str = "Sem dados no filtro atual.") -> None:
     """Renderiza um DataFrame como tabela de header verde (fiel à imagem).
 
     colunas: {chave_df: 'Rótulo exibido'} na ordem desejada.
+    formato: {chave_df: callable} aplicado célula a célula na hora de desenhar.
     col_oficina: chave destacada em verde. col_num: chaves alinhadas à direita.
     col_html: chaves cujo conteúdo já é HTML confiável (pílulas) e não deve ser
     escapado — tudo o mais passa por `html.escape`.
+
+    O DataFrame recebido é o **cru** (números e datas nativos). Formatar aqui
+    dentro, e não antes de chamar, é o que permite formatar só as linhas que vão
+    de fato para a tela — ver `tabela_paginada`.
     """
     if df.empty:
         st.info(vazio)
         return
+    formato = formato or {}
     ths = "".join(
         f'<th class="{"num" if chave in col_num else ""}">{html.escape(rotulo)}</th>'
         for chave, rotulo in colunas.items()
     )
+    # As classes de cada coluna são fixas: calcular fora do laço evita refazer a
+    # mesma decisão uma vez por célula numa página de 100 linhas.
+    classes = {
+        chave: ("of" if chave == col_oficina else ("num" if chave in col_num else ""))
+        for chave in colunas
+    }
     linhas = []
-    for _, row in df.iterrows():
-        tds = []
-        for chave in colunas:
-            bruto = "" if pd.isna(row[chave]) else str(row[chave])
-            valor = bruto if chave in col_html else html.escape(bruto)
-            classe = "of" if chave == col_oficina else ("num" if chave in col_num else "")
-            tds.append(f'<td class="{classe}">{valor}</td>')
+    for row in df[list(colunas)].itertuples(index=False, name=None):
+        tds = [
+            f'<td class="{classes[chave]}">'
+            f'{texto if chave in col_html else html.escape(texto)}</td>'
+            for chave, texto in (
+                (c, _celula(v, formato.get(c))) for c, v in zip(colunas, row)
+            )
+        ]
         linhas.append(f"<tr>{''.join(tds)}</tr>")
     st.markdown(
         f'<div class="tbl-wrap"><table class="gf"><thead><tr>{ths}</tr></thead>'
@@ -752,7 +816,18 @@ LINHAS_POR_PAGINA = 100
 
 
 def tabela_paginada(df: pd.DataFrame, colunas: dict, chave: str, **kwargs) -> None:
-    """`tabela_verde` com navegação de páginas quando a base é grande."""
+    """`tabela_verde` com navegação de páginas quando a base é grande.
+
+    A fatia da página é tirada ANTES de qualquer formatação, e é essa ordem que
+    importa: formatar é trabalho por célula em Python (`fmt_int`, `fmt_data`),
+    então montar a base inteira formatada para mostrar 100 linhas custava uma
+    varredura completa do fato a cada rerun — em toda troca de filtro, de aba ou
+    de página. Com o recorte primeiro, o custo passa a ser proporcional ao que
+    aparece na tela, não ao tamanho da base.
+
+    O Excel continua saindo completo: `botao_excel` recebe o DataFrame cru e não
+    passa por aqui.
+    """
     total = len(df)
     if total == 0:
         tabela_verde(df, colunas, **kwargs)
@@ -818,23 +893,18 @@ COLUNAS_FATO = {"oficina": "Oficina", "data": "Data", "mp": "MP",
                 "qtd_pecas": "Qtd. de peças", "minutos": "Minutos", "om": "OM"}
 
 
+FORMATO_FATO = {"data": fmt_data, "qtd_pecas": fmt_int, "minutos": fmt_dec,
+                "om": fmt_om}
+
+
 def tabela_fato(df: pd.DataFrame, chave: str, *, titulo: str = "",
                 subtitulo: str = "") -> None:
     """Tabela do fato com os 6 campos pedidos, no layout verde e paginada."""
     if df.empty:
         st.info("Sem linhas no filtro atual.")
         return
-    visao = pd.DataFrame({
-        "oficina": df["oficina"],
-        "data": df["data"].map(fmt_data),
-        "mp": df["mp"],
-        "qtd_pecas": df["qtd_pecas"].map(fmt_int),
-        "minutos": df["minutos"].map(lambda v: f"{float(v):,.2f}"
-                                     .replace(",", "@").replace(".", ",").replace("@", ".")),
-        "om": df["om"].map(lambda v: "—" if pd.isna(v) else f"{int(v)}"),
-    })
     tabela_paginada(
-        visao, COLUNAS_FATO, chave,
+        df, COLUNAS_FATO, chave, formato=FORMATO_FATO,
         col_oficina="oficina", col_num=("qtd_pecas", "minutos", "om"),
     )
     botao_excel(
