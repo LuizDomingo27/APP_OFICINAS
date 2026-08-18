@@ -262,6 +262,26 @@ table.gf tbody td.of { color:var(--verde); font-weight:600; text-align:left; }
 .pill.sem-prazo   { background:rgba(139,152,169,.12); color:var(--muted);
                     border-color:rgba(139,152,169,.26); }
 
+/* Pílula do tempo médio por peça (aba de Metas): neon roxo suave — fundo
+   translúcido, texto lavanda, contorno e brilho na mesma cor. Cápsula redonda,
+   com um ponto de acento que brilha e o valor em tabular-nums, para o número
+   não "saltar" de largura quando a meta muda. */
+.pill.tempo-medio {
+    display:inline-flex; align-items:center; gap:9px;
+    padding:7px 15px; border-radius:999px;
+    font-size:.78rem; font-weight:600; letter-spacing:.02em;
+    color:#C4B5FD; background:rgba(167,139,250,.10);
+    border:1px solid rgba(167,139,250,.34);
+    box-shadow:0 0 18px rgba(139,92,246,.16);
+}
+.pill.tempo-medio strong {
+    color:#EDE9FE; font-weight:700; font-variant-numeric:tabular-nums;
+}
+.pill.tempo-medio .tm-dot {
+    width:7px; height:7px; border-radius:50%; flex:none;
+    background:#A78BFA; box-shadow:0 0 9px rgba(167,139,250,.85);
+}
+
 .tbl-rodape { font-size:.8rem; color:var(--muted); margin:8px 2px 0; }
 
 /* Variação percentual dentro do card (atual vs. período anterior) */
@@ -487,6 +507,32 @@ table.gf tbody td.of { color:var(--verde); font-weight:600; text-align:left; }
 [data-testid="stDownloadButton"] button:hover {
     filter:brightness(1.08); transform:translateY(-1px);
 }
+/* "Salvar metas" foge do teal padrão: acento roxo neon suave e caixa mais
+   enxuta (fonte menor, menos padding) para pesar menos ao lado da pílula. O
+   download segue teal — a regra compartilhada acima ainda o pinta. Vem depois
+   dela de propósito: mesma especificidade, então a ordem é que decide. */
+.st-key-metas-form [data-testid="stFormSubmitButton"] button {
+    font-size:.86rem; padding:9px 16px; color:#F5F3FF;
+    background:linear-gradient(135deg,#A78BFA,#8B5CF6);
+    box-shadow:0 0 0 1px rgba(167,139,250,.30), 0 6px 18px rgba(139,92,246,.26);
+}
+.st-key-metas-form [data-testid="stFormSubmitButton"] button p { color:#F5F3FF; }
+.st-key-metas-form [data-testid="stFormSubmitButton"] button:hover {
+    filter:brightness(1.06); transform:translateY(-1px);
+    box-shadow:0 0 0 1px rgba(167,139,250,.45), 0 9px 24px rgba(139,92,246,.36);
+}
+.st-key-metas-form [data-testid="stFormSubmitButton"] button:focus-visible {
+    outline:none; box-shadow:0 0 0 3px rgba(167,139,250,.42);
+}
+
+/* Faixa de ação (botão + pílula): o próprio container leva o `st-key-metas-acao`
+   (é o bloco vertical do Streamlit), então vira linha aqui mesmo. Os elementos
+   encolhem ao próprio conteúdo (width:auto) e só quebram quando não couberem;
+   `align-items:center` alinha a pílula à altura do botão. */
+.st-key-metas-acao[data-testid="stVerticalBlock"] {
+    flex-direction:row; align-items:center; gap:14px; flex-wrap:wrap;
+}
+.st-key-metas-acao > [data-testid="stElementContainer"] { width:auto; }
 /* O Streamlit repinta o texto no hover/active; travamos a tinta escura. */
 [data-testid="stDownloadButton"] button:hover,
 [data-testid="stDownloadButton"] button:active,

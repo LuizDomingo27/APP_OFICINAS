@@ -88,6 +88,20 @@ def limites_do_mes(ano: int, mes: int) -> tuple:
     return date(ano, mes, 1), date(ano, mes, calendar.monthrange(ano, mes)[1])
 
 
+# NOTE: a função abaixo é usada na tela de metas, mas não no cálculo do plano. O plano é feito com a meta mensal diluída por dia útil, e a tela mostra o tempo médio por peça, que é o que o time quer ver. A função é mantida aqui para não quebrar a tela, mas não é usada no cálculo do plano.
+def tempo_medio_peca(minutos: float, pecas: float) -> float | None:
+    """Minutos que, em média, cada peça representa na meta: `minutos ÷ peças`.
+
+    A razão é invariante à diluição — mês, semana e dia dividem os dois lados pelo
+    mesmo número de dias úteis —, então basta a meta cadastrada, sem período. Sem
+    peças no denominador não há média a mostrar: devolve None (a tela vira travessão),
+    em vez de um 0 que pareceria uma meta cumprida em tempo zero.
+    """
+    if not pecas or pecas <= 0:
+        return None
+    return float(minutos) / float(pecas)
+
+
 @dataclass
 class Acompanhamento:
     """Uma meta e onde estamos em relação a ela."""
