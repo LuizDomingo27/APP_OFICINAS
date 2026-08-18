@@ -68,6 +68,18 @@ def test_fim_de_semana_isolado_nao_tem_dia_util():
 
 
 # --------------------------------------------------------------------------- #
+# Tempo médio por peça
+# --------------------------------------------------------------------------- #
+def test_tempo_medio_peca_divide_minutos_por_pecas():
+    assert metas.tempo_medio_peca(1_000_000, 10000) == pytest.approx(100.0)
+
+
+def test_tempo_medio_peca_sem_pecas_devolve_none():
+    """Sem peças no denominador não há média — travessão, não zero."""
+    assert metas.tempo_medio_peca(1_000_000, 0) is None
+
+
+# --------------------------------------------------------------------------- #
 # Diluição e acompanhamento
 # --------------------------------------------------------------------------- #
 def test_meta_mensal_e_diluida_pelos_dias_uteis(realizado):

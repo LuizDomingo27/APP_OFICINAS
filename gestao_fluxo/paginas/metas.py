@@ -38,8 +38,6 @@ def _formulario(salvas: dict) -> None:
     # O `key` do container é o gancho do CSS (.st-key-metas-form) que estiliza
     # o cartão, os rótulos e a largura dos campos — ver gestao_fluxo/ui.py.
     with st.container(key="metas-form"), st.form("form_metas"):
-        ui.texto_apoio("Informe as metas em peças e em minutos. Semana e dia são "
-                       "opcionais: deixando 0, o sistema usa a diluição da meta mensal.")
         novos: dict = {}
         colunas = st.columns(3, gap="large")
         for coluna, (periodo, titulo, accent) in zip(colunas, ui.METAS_GRUPOS):
@@ -55,15 +53,34 @@ def _formulario(salvas: dict) -> None:
                         format="%.0f", key=f"in_{chave}",
                         help=config.METAS_CHAVES[chave],
                     )
-        # Sem `use_container_width`: o botão fica do tamanho do rótulo, em vez de
-        # esticar por toda a largura do formulário.
-        if st.form_submit_button("Salvar metas"):
+        # Botão de salvar e a pílula do tempo médio na MESMA linha. O container
+        # (.st-key-metas-acao) vira uma faixa flex no CSS — ver gestao_fluxo/ui.py.
+        with st.container(key="metas-acao"):
+            # Sem `use_container_width`: o botão fica do tamanho do rótulo.
+            salvar = st.form_submit_button("Salvar metas")
+            # Reflete a meta MENSAL já salva (vive dentro do form, então não reage
+            # ao que ainda está sendo digitado — só ao que foi gravado).
+            _badge_tempo_medio(salvas)
+
+        if salvar:
             try:
                 metas.salvar_metas(servicos.engine(), novos)
                 st.success("Metas salvas.")
                 st.rerun()
             except GestaoFluxoError as exc:
                 st.error(exc.mensagem_usuario)
+
+
+def _badge_tempo_medio(salvas: dict) -> None:
+    """Pílula neon-roxa com o tempo médio por peça da meta mensal — `minutos ÷ peças`."""
+    medio = metas.tempo_medio_peca(salvas.get("mes_minutos", 0.0),
+                                   salvas.get("mes_pecas", 0.0))
+    valor = f"{ui.fmt_dec(medio)} min" if medio is not None else "—"
+    st.markdown(
+        f'<span class="pill tempo-medio"><span class="tm-dot"></span>'
+        f'Tempo médio por peça <strong>{valor}</strong></span>',
+        unsafe_allow_html=True,
+    )
 
 
 # =========================================================================== #
